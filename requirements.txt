@@ -1,0 +1,20 @@
+# Google APIs & Auth
+google-api-python-client~=2.193.0
+google-auth-httplib2~=0.3.1
+google-auth-oauthlib~=1.3.1
+httplib2~=0.31.2
+
+# Network & Env
+requests~=2.33.1
+python-dotenv~=1.2.2
+PySocks~=1.7.1
+
+# AI & Agents
+langgraph~=1.1.6
+langchain~=1.2.15
+langchain-openai~=1.1.12
+pydantic~=2.12.5
+
+# Web Server
+fastapi~=0.135.3
+uvicorn~=0.30.0

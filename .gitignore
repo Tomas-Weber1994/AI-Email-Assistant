@@ -1,0 +1,22 @@
+# Local env variables
+.env
+.env.local
+
+# Credentials & Tokens
+credentials/
+token.json
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+env/
+venv/
+.venv/
+.conda/
+
+# IDE settings
+.idea/
+.vscode/
