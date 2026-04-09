@@ -1,46 +1,41 @@
 import os
 import logging
+from contextlib import asynccontextmanager
+
+import uvicorn
 from fastapi import FastAPI
-from dotenv import load_dotenv
-from app.auth import get_gmail_service, get_calendar_service
 
-load_dotenv()
+from app.api.endpoints import router
+from app.settings import settings
+from app.utils.logging_config import configure_logging
 
-# Global config (Proxy & OAuth)
-if os.getenv("PROXY_HOST") and os.getenv("PROXY_PORT"):
-    proxy_url = f"http://{os.getenv('PROXY_HOST')}:{os.getenv('PROXY_PORT')}"
-    os.environ.update({
-        "HTTP_PROXY": proxy_url,
-        "HTTPS_PROXY": proxy_url,
-        "NO_PROXY": "localhost,127.0.0.1"
-    })
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+configure_logging()
+logger = logging.getLogger("app.main")
 
-app = FastAPI(title="AI Email Agent API")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.proxy_url:
+        os.environ["HTTP_PROXY"] = settings.proxy_url
+        os.environ["HTTPS_PROXY"] = settings.proxy_url
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 
+    logger.info("Starting AI Email Agent")
+    yield
+    logger.info("Shutting down AI Email Agent")
 
-@app.get("/")
-def read_root():
-    return {"status": "online", "agent": "AiEmailAgent"}
+app = FastAPI(
+    title="AI Email Agent API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
+app.include_router(router, prefix="/api/v1")
 
-@app.get("/test-connection")
-def test_connection():
-    """Endpoint to verify both Gmail and Calendar API connectivity."""
-    results = {}
-    try:
-        # Check Gmail
-        gmail_service = get_gmail_service()
-        labels = gmail_service.users().labels().list(userId="me").execute()
-        results["gmail"] = {"status": "ok", "labels_found": len(labels.get("labels", []))}
-
-        # Check Calendar
-        calendar_service = get_calendar_service()
-        calendar_list = calendar_service.calendarList().list().execute()
-        results["calendar"] = {"status": "ok", "calendars_found": len(calendar_list.get("items", []))}
-
-        return {"status": "success", "data": results}
-    except Exception as e:
-        logging.error(f"Connection test failed: {e}")
-        return {"status": "error", "detail": str(e)}
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host=settings.APP_HOST,
+        port=settings.APP_PORT,
+        reload=True,
+        access_log=True,
+    )
