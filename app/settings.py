@@ -13,11 +13,14 @@ class Settings(BaseSettings):
     CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
     TOKEN_PATH: Path = CREDENTIALS_DIR / "token.json"
     CREDENTIALS_PATH: Path = CREDENTIALS_DIR / "credentials.json"
+    # Override via DB_PATH env-var — in Docker mount a volume to /data and set DB_PATH=/data/agent.db
+    DB_PATH: Path = BASE_DIR / "data" / "agent.db"
 
     # Server
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 9000
     LOG_LEVEL: str = "INFO"
+    POLL_INTERVAL_SECONDS: int = 60
 
     # Proxy
     PROXY_HOST: str | None = None
@@ -25,6 +28,7 @@ class Settings(BaseSettings):
 
     # Google
     GMAIL_USER: str = ""
+    MANAGER_EMAIL: str = ""  # email address to send approval requests to
 
     # OpenAI
     OPENAI_API_KEY: str = ""
