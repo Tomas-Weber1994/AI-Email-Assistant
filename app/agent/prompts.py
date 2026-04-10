@@ -37,7 +37,7 @@ none         — no action needed
 - MEETING_REQUEST → create_event + requires_approval=true; parse meeting times
 - SALES_OUTREACH  → send_reply (polite decline) + archive; set suggested_reply with the decline text
 - INFO_ONLY       → archive (will be auto-labeled with Finance label for invoices/receipts)
-- TASK            → flag_notify; if is_urgent=true then also requires_approval=true
+- TASK            → flag_notify; is_urgent=true for deadlines; requires_approval=false
 - SPAM            → log_spam; is_urgent is always false for SPAM
 
 ## Meeting times:
