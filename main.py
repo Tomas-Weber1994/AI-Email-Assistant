@@ -24,14 +24,15 @@ async def _poll_loop(gmail: GmailService, calendar: CalendarService):
     await asyncio.sleep(5)
     while True:
         try:
+            resolved = await ApprovalService(gmail).process_pending()
+            if resolved:
+                logger.info(f"Poll: resolved {len(resolved)} approval(s).")
+
             runner = AgentRunner(gmail, calendar)
             results = await runner.process_unread()
             if results:
                 logger.info(f"Poll: processed {len(results)} email(s).")
 
-            resolved = await ApprovalService(gmail).process_pending()
-            if resolved:
-                logger.info(f"Poll: resolved {len(resolved)} approval(s).")
 
         except Exception:
             logger.exception("Poll cycle failed — will retry next interval.")

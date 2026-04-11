@@ -36,7 +36,8 @@ class GmailService(GoogleService):
             self._label_map[name] = existing[name]
 
     def list_unread(self, max_results: int = 20) -> List[Dict[str, Any]]:
-        query = "label:INBOX is:unread"
+        # Control thread for manager approvals must not enter the main classification flow.
+        query = 'label:INBOX is:unread -subject:"[APPROVAL]"'
         request = self.service.users().messages().list(
             userId=self.USER_ID, q=query, maxResults=max_results
         )
