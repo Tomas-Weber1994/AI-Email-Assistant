@@ -47,10 +47,12 @@ def test_routing_goes_cleanup_when_no_tool_calls():
 def test_routing_bypasses_policy_when_manager_approved():
     state = _base_state()
     state["manager_decision"] = ApprovalDecision.APPROVE
+    approved_calls = [{"name": "send_reply", "args": {"text": "ok"}, "id": "t1", "type": "tool_call"}]
+    state["pending_approval_tool_calls"] = approved_calls
     state["messages"] = [
         AIMessage(
             content="run",
-            tool_calls=[{"name": "send_reply", "args": {"text": "ok"}, "id": "t1", "type": "tool_call"}],
+            tool_calls=approved_calls,
         )
     ]
     policy = StubPolicy(value=True)
@@ -59,6 +61,26 @@ def test_routing_bypasses_policy_when_manager_approved():
 
     assert decision == "tools"
     assert policy.called is False
+
+
+def test_routing_rechecks_policy_when_manager_approved_but_calls_changed():
+    state = _base_state()
+    state["manager_decision"] = ApprovalDecision.APPROVE
+    state["pending_approval_tool_calls"] = [
+        {"name": "send_reply", "args": {"text": "old"}, "id": "t-old", "type": "tool_call"}
+    ]
+    state["messages"] = [
+        AIMessage(
+            content="run",
+            tool_calls=[{"name": "send_reply", "args": {"text": "new"}, "id": "t-new", "type": "tool_call"}],
+        )
+    ]
+    policy = StubPolicy(value=True)
+
+    decision = routing_logic(state, policy)
+
+    assert decision == "ask_approval"
+    assert policy.called is True
 
 
 def test_routing_sends_to_ask_approval_when_policy_blocks():

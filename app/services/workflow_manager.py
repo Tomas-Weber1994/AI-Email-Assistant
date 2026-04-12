@@ -1,16 +1,19 @@
 import logging
 import json
-from typing import Optional
+import re
+from typing import Optional, Any, Dict, List
 from starlette.concurrency import run_in_threadpool
 from langchain_core.messages import HumanMessage
+
 from app.schemas.api import ApprovalDecision, WorkflowStatus
 from app.schemas.classification import GmailReservedLabel, GmailSystemLabel
 from app.settings import settings
-from app.utils.email_utils import get_body
+from app.utils.email_utils import get_body, get_headers
 from app.workflows.graph import create_email_graph
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("audit_trail")
+_WF_TAG_RE = re.compile(r"\[WF:([^]]+)\]")
 
 
 class WorkflowManager:
@@ -20,7 +23,8 @@ class WorkflowManager:
         self.llm = llm
         self.graph = create_email_graph(checkpointer)
 
-    def _config(self, thread_id: str):
+    def _get_config(self, thread_id: str) -> Dict[str, Any]:
+        """Returns the standard configuration for graph invocation."""
         return {
             "configurable": {
                 "thread_id": thread_id,
@@ -30,166 +34,146 @@ class WorkflowManager:
             }
         }
 
-    @staticmethod
-    def _snapshot_values(snapshot) -> dict:
-        return snapshot.values if snapshot and hasattr(snapshot, "values") else {}
-
-    @classmethod
-    def _label_from_snapshot(cls, snapshot) -> str:
-        classification = cls._snapshot_values(snapshot).get("classification")
-        return classification.label.value if classification and hasattr(classification, "label") else "UNCLASSIFIED"
-
-    async def process_unread(self):
-        """Fetches unread inbox emails and starts a new workflow for each one."""
-        unread_messages = await run_in_threadpool(self.email.list_unread)
-
+    async def process_unread(self) -> List[Dict[str, Any]]:
+        """Main loop for processing new unread emails."""
+        unread_messages = await self._run(self.email.list_unread)
         if not unread_messages:
             return []
 
-        logger.info("Found %d new email(s) to process.", len(unread_messages))
-
         results = []
-        for msg_info in unread_messages:
-            email_id = msg_info["id"]
-            # thread_id is the stable workflow key used by the checkpointer for resume.
-            thread_id = msg_info.get("threadId") or email_id
+        for msg in unread_messages:
+            email_id = msg["id"]
+            thread_id = msg.get("threadId") or email_id
 
-            if await run_in_threadpool(self.email.has_label, email_id, GmailSystemLabel.PENDING_APPROVAL.value):
-                logger.info("Skipping email %s: already waiting for manager approval.", email_id)
+            # Skip if workflow is already in PENDING_APPROVAL state
+            is_pending = await self._run(self.email.has_label, email_id, GmailSystemLabel.PENDING_APPROVAL.value)
+            if is_pending:
+                logger.info(f"Skipping email {email_id}: pending manager approval.")
                 continue
 
-            result = await self.process_new_email(email_id, thread_id)
-            results.append(result)
+            results.append(await self.process_new_email(email_id, thread_id))
 
         return results
 
-    async def process_new_email(self, email_id: str, thread_id: str):
-        """Runs the graph for a newly received email."""
-        config = self._config(thread_id)
+    async def process_new_email(self, email_id: str, thread_id: str) -> Dict[str, Any]:
+        """Starts the workflow graph for a specific email."""
+        config = self._get_config(thread_id)
         try:
-            result = await run_in_threadpool(
-                self.graph.invoke,
-                {"email_id": email_id},
-                config,
-            )
-            return result
-
+            return await self._run(self.graph.invoke, {"email_id": email_id}, config)
         except Exception as e:
-            logger.error("Critical error processing thread %s: %s", thread_id, e, exc_info=True)
-            # Try to read the classification already saved in the checkpoint.
+            # Fallback to state lookup for auditing if invocation fails
             label = "UNCLASSIFIED"
             try:
-                state_snapshot = await run_in_threadpool(self.graph.get_state, config)
-                label = self._label_from_snapshot(state_snapshot)
+                snapshot = await self._run(self.graph.get_state, config)
+                classification = snapshot.values.get("classification") if snapshot else None
+                label = classification.label.value if classification else "UNCLASSIFIED"
             except Exception:
-                pass  # fall back to UNCLASSIFIED
+                pass
 
-            self._emit_error_audit(email_id=email_id, error=e, label=label)
-            return {
-                "email_id": email_id,
-                "thread_id": thread_id,
-                "status": WorkflowStatus.ERROR,
-                "error_message": str(e),
-            }
+            self._emit_audit(email_id, label, e)
+            return self._error_response(email_id, thread_id, e)
 
-    async def process_pending_approvals(self):
-        """Polls Gmail for manager approval replies and resumes the matching workflows."""
-        replies = await run_in_threadpool(
-            self.email.list_approval_replies,
-            manager_email=settings.MANAGER_EMAIL,
-        )
-
+    async def process_pending_approvals(self) -> None:
+        """Checks for manager's email responses to resume paused workflows."""
+        replies = await self._run(self.email.list_approval_replies, settings.MANAGER_EMAIL)
         if not replies:
             return
 
-        logger.info("Found %d approval reply candidate(s).", len(replies))
+        for reply in replies:
+            msg_id = reply["id"]
+            msg = await self._run(self.email.get_message, msg_id)
 
-        for reply_info in replies:
-            msg_id = reply_info["id"]
-            full_msg = await run_in_threadpool(self.email.get_message, msg_id)
+            # Parse decision from text body
+            body_text = f"{msg.get('snippet', '')}\n{get_body(msg)}"
+            decision = self._parse_decision(body_text)
+            workflow_id = self._extract_workflow_id(msg)
 
-            snippet = full_msg.get("snippet", "")
-            full_text = f"{snippet}\n{get_body(full_msg)}"
-            thread_id = full_msg.get("threadId")
-            decision = self._extract_manager_decision(full_text)
+            if decision and workflow_id:
+                await self.resume_with_decision(workflow_id, decision)
+                # Mark manager's reply as processed
+                await self._run(self.email.modify_labels, msg_id, remove=[GmailReservedLabel.UNREAD.value])
 
-            if not decision:
-                logger.debug("Skipping reply %s: decision not parsed from manager message.", msg_id)
-                continue
-
-            if not thread_id:
-                logger.warning("Skipping reply %s: missing threadId.", msg_id)
-                continue
-
-            logger.info("Manager decision for thread %s: %s", thread_id, decision.value)
-            await self.resume_with_decision(thread_id, decision)
-
-            # Mark the reply as read so it is not processed again.
-            await run_in_threadpool(
-                self.email.modify_labels,
-                msg_id,
-                remove=[GmailReservedLabel.UNREAD.value],
-            )
-
-    async def resume_with_decision(self, thread_id: str, decision: ApprovalDecision):
-        """Resumes the graph after the manager replies APPROVE or REJECT."""
-        config = self._config(thread_id)
+    async def resume_with_decision(self, thread_id: str, decision: ApprovalDecision) -> Dict[str, Any]:
+        """Resumes a workflow with the manager's APPROVE/REJECT input."""
+        config = self._get_config(thread_id)
         try:
-            # Read the checkpoint to get the original message ID (needed to remove the
-            # PENDING_APPROVAL label, which is on the message, not the thread).
-            snapshot = await run_in_threadpool(self.graph.get_state, config)
-            original_email_id = self._snapshot_values(snapshot).get("email_id")
+            # Get original email_id from state to update its labels later
+            snapshot = await self._run(self.graph.get_state, config)
+            email_id = snapshot.values.get("email_id") if snapshot else None
 
-            await run_in_threadpool(
-                self.graph.update_state,
-                config,
-                {
-                    "messages": [HumanMessage(content=decision.value)],
-                    "manager_decision": decision,
-                }
-            )
+            # Inject decision into graph state
+            await self._run(self.graph.update_state, config, {
+                "messages": [HumanMessage(content=decision.value)],
+                "manager_decision": decision,
+            })
 
-            result = await run_in_threadpool(self.graph.invoke, None, config)
+            # Resume execution
+            result = await self._run(self.graph.invoke, None, config)
 
-            if original_email_id:
-                await run_in_threadpool(
-                    self.email.modify_labels,
-                    original_email_id,
-                    remove=[GmailSystemLabel.PENDING_APPROVAL.value],
-                )
+            if email_id:
+                await self._run(self.email.modify_labels, email_id, remove=[GmailSystemLabel.PENDING_APPROVAL.value])
 
             return result
-
         except Exception as e:
-            logger.error("Error during resumption of thread %s: %s", thread_id, e, exc_info=True)
-            return {"thread_id": thread_id, "status": WorkflowStatus.ERROR, "error_message": str(e)}
+            return self._error_response(None, thread_id, e)
 
     @staticmethod
-    def _extract_manager_decision(text: str) -> Optional[ApprovalDecision]:
-        # Parse the first explicit decision token from manager-authored lines.
-        # This tolerates punctuation like "APPROVE." and avoids exact-match brittleness.
-        for raw_line in str(text or "").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith(">"):
+    def _parse_decision(text: str) -> Optional[ApprovalDecision]:
+        """Parses the manager's decision from the email text."""
+        for line in filter(None, map(str.strip, text.splitlines())):
+            if line.startswith(">"):
                 continue
 
-            token = line.split()[0].strip(".,!?:;\"'()[]{}")
-            normalized = token.upper()
-            if normalized == ApprovalDecision.APPROVE.value:
+            token = line.split()[0].strip(".,!?:;\"'()[]{}").upper()
+            if token == ApprovalDecision.APPROVE.value:
                 return ApprovalDecision.APPROVE
-            if normalized == ApprovalDecision.REJECT.value:
+            if token == ApprovalDecision.REJECT.value:
                 return ApprovalDecision.REJECT
-
         return None
 
     @staticmethod
-    def _emit_error_audit(email_id: str, error: Exception, label: str = "UNCLASSIFIED") -> None:
-        audit_entry = {
+    def _extract_manager_decision(text: str) -> Optional[ApprovalDecision]:
+        """Backward-compatible alias used by older tests/callers."""
+        return WorkflowManager._parse_decision(text)
+
+    @staticmethod
+    def _extract_workflow_id(msg: Dict[str, Any]) -> Optional[str]:
+        """Extract workflow id from [WF:...] tag in subject/body; fallback to threadId."""
+        headers = get_headers(msg)
+        subject = headers.get("Subject", "")
+        body = f"{msg.get('snippet', '')}\n{get_body(msg)}"
+
+        for source in (subject, body):
+            match = _WF_TAG_RE.search(source or "")
+            if match:
+                return match.group(1).strip()
+
+        # Fallback for legacy approval emails that do not include the WF tag.
+        return msg.get("threadId")
+
+    @staticmethod
+    def _error_response(email_id: Optional[str], thread_id: str, error: Exception) -> Dict[str, Any]:
+        """Standardized error output for API and logging."""
+        logger.error(f"Critical error on thread {thread_id}: {error}", exc_info=True)
+        return {
+            "email_id": email_id,
+            "thread_id": thread_id,
+            "status": WorkflowStatus.ERROR,
+            "error_message": str(error),
+        }
+
+    @staticmethod
+    def _emit_audit(email_id: str, label: str, error: Exception) -> None:
+        """Logs the failure into the audit trail."""
+        entry = {
             "email_id": email_id,
             "label": label,
-            "is_urgent": False,
-            "actions": [],
             "outcome": "ERROR",
-            "trace": [f"ERROR: Workflow failed outside cleanup: {error}"],
+            "trace": [str(error)]
         }
-        audit_logger.info("AUDIT_RECORD: %s", json.dumps(audit_entry, ensure_ascii=False))
+        audit_logger.info("AUDIT_RECORD: %s", json.dumps(entry, ensure_ascii=False))
+
+    @staticmethod
+    async def _run(func, *args, **kwargs) -> Any:
+        """Executes sync I/O in a threadpool to prevent blocking."""
+        return await run_in_threadpool(func, *args, **kwargs)

@@ -16,3 +16,26 @@ def test_extract_manager_decision_ignores_non_decision_lines():
     text = "Hello manager here\nPlease proceed"
     assert WorkflowManager._extract_manager_decision(text) is None
 
+
+def test_extract_workflow_id_from_subject_tag():
+    msg = {
+        "threadId": "gmail-thread-1",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "Re: [APPROVAL REQUIRED] [WF:wf-123] Test"},
+            ]
+        },
+        "snippet": "APPROVE",
+    }
+    assert WorkflowManager._extract_workflow_id(msg) == "wf-123"
+
+
+def test_extract_workflow_id_falls_back_to_thread_id_without_tag():
+    msg = {
+        "threadId": "gmail-thread-legacy",
+        "payload": {"headers": [{"name": "Subject", "value": "Re: Approval"}]},
+        "snippet": "APPROVE",
+    }
+    assert WorkflowManager._extract_workflow_id(msg) == "gmail-thread-legacy"
+
+

@@ -115,7 +115,7 @@ def archive_and_label(
 
 
 @tool
-def notify_manager(proposed_action: str, config: RunnableConfig):
+def notify_manager(proposed_action: str):
     """Sends an immediate notification to the manager about an important task."""
     return f"SUCCESS: Manager notified about: {proposed_action}"
 

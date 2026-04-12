@@ -1,4 +1,5 @@
 import base64
+from email.utils import parseaddr
 from email.message import EmailMessage
 from typing import Any
 
@@ -93,15 +94,26 @@ class GmailService(GoogleService):
 
     def send_reply(self, original_msg: dict[str, Any], text: str) -> dict[str, Any]:
         headers = get_headers(original_msg)
-        reply_text = str(text or "").replace("[Your Name]", "Manager (Automatic reply)")
+        reply_text = self._ensure_reply_text(text)
         message = EmailMessage()
         message.set_content(reply_text)
-        message["To"] = headers.get("From")
+        message["To"] = self._extract_reply_recipient(headers)
         message["Subject"] = f"Re: {headers.get('Subject', '')}"
         if message_id := headers.get("Message-ID"):
             message["In-Reply-To"] = message_id
             message["References"] = message_id
         return self._send_raw(message, thread_id=original_msg.get("threadId"))
+
+    @classmethod
+    def _extract_reply_recipient(cls, headers: dict[str, str]) -> str:
+        raw_recipient = headers.get("Reply-To") or headers.get("From") or ""
+        _, email_addr = parseaddr(raw_recipient)
+        return email_addr or raw_recipient
+
+    @classmethod
+    def _ensure_reply_text(cls, text: str | None) -> str:
+        content = str(text or "").strip()
+        return content or "Thank you for your message."
 
     def send_message(self, to: str, subject: str, body: str) -> dict[str, Any]:
         message = EmailMessage()
@@ -134,8 +146,8 @@ class GmailService(GoogleService):
         message["To"] = settings.MANAGER_EMAIL
         message["Subject"] = f"{self.APPROVAL_SUBJECT_TAG} [WF:{workflow_ref}] {source_subject}"
 
-        # Prefer original thread_id so watcher can resume by thread_id.
-        return self._send_raw(message, thread_id=workflow_ref)
+        # Keep approval control mail in a separate thread; resume is driven by [WF:...] tag.
+        return self._send_raw(message)
 
     def _send_raw(self, message: EmailMessage, thread_id: str | None = None) -> dict[str, Any]:
         body = {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}
