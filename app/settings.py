@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
     TOKEN_PATH: Path = CREDENTIALS_DIR / "token.json"
-    CREDENTIALS_PATH: Path = CREDENTIALS_DIR / "credentials.json"
     # Override via DB_PATH env-var — in Docker mount a volume to /data and set DB_PATH=/data/agent.db
     DB_PATH: Path = BASE_DIR / "data" / "agent.db"
 
@@ -20,15 +19,14 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 9000
     LOG_LEVEL: str = "INFO"
-    POLL_INTERVAL_SECONDS: int = 60
-    MAX_ANALYZE_PASSES: int = 4
+    POLL_INTERVAL_SECONDS: int = 30
+    MAX_ANALYZE_PASSES: int = 6
 
     # Proxy
     PROXY_HOST: str | None = None
     PROXY_PORT: int | None = None
 
     # Google
-    GMAIL_USER: str = ""
     MANAGER_EMAIL: str = ""  # email address to send approval requests to
     SALES_REPLY_REQUIRES_APPROVAL: bool = False
 

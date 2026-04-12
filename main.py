@@ -24,46 +24,47 @@ logger = logging.getLogger("app.main")
 
 
 async def _poll_loop(manager: WorkflowManager):
-    """Background loop pro zpracování nových emailů a odpovědí od manažera."""
+    """
+    Loop for periodic polling of Gmail for new emails and approval replies. Runs in background task.
+    """
     await asyncio.sleep(5)
     while True:
         try:
-            # 1. Zpracování případných schvalovacích emailů od manažera
             await manager.process_pending_approvals()
-
-            # 2. Zpracování nových nepřečtených emailů v inboxu
             await manager.process_unread()
-
         except Exception:
             logger.exception("Poll cycle failed — will retry next interval.")
 
         await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Proxy nastavení
     if settings.proxy_url:
         os.environ["HTTP_PROXY"] = settings.proxy_url
         os.environ["HTTPS_PROXY"] = settings.proxy_url
 
     logger.info("Starting AI Email Agent (Tight-Logic Edition)")
 
-    # Inicializace SQLite checkpointeru pro LangGraph
+    # Init Checkpointer for workflow state persistence.
     db_path = settings.DB_PATH.parent / "checkpoints.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     serde = JsonPlusSerializer(
-        allowed_msgpack_modules=[("app.workflows.state", "EmailClassification")]
+        allowed_msgpack_modules=[
+            ("app.workflows.state", "EmailClassification"),
+            ("app.schemas.classification", "EmailLabel"),
+            ("app.schemas.api", "WorkflowStatus"),
+            ("app.schemas.api", "ApprovalDecision"),
+        ]
     )
     checkpointer = SqliteSaver(conn, serde=serde)
 
-    # Inicializace služeb
+    # Init services
     auth = get_authorized_http()
     gmail = GmailService(auth)
     calendar = CalendarService(auth)
 
-    # Manageru předáváme i checkpointer
+    # Init Manager with Checkpointer
     manager = WorkflowManager(
         email=gmail,
         calendar=calendar,
@@ -72,17 +73,13 @@ async def lifespan(app: FastAPI):
     )
     app.state.workflow_manager = manager
 
-    # Příprava Gmail labelů
     try:
         gmail.ensure_labels(required_gmail_labels())
     except Exception as e:
         logger.warning("Could not sync Gmail labels: %s", e)
 
-    # Start pollingu
     poll_task = asyncio.create_task(_poll_loop(manager))
-
     yield
-
     poll_task.cancel()
     conn.close()
     logger.info("Shutting down AI Email Agent")

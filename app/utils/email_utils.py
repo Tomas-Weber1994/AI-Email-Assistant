@@ -26,27 +26,3 @@ def get_body(raw_msg: dict) -> str:
 
     return raw_msg.get("snippet", "")
 
-
-def build_approval_email(headers: dict, tool_call: dict, workflow_id: str) -> str:
-    """Sestaví tělo emailu pro manažera na základě navrženého tool callu."""
-    tool_name = tool_call.get("name")
-    args = tool_call.get("args", {})
-
-    lines = [
-        "AI Agent — Approval Required",
-        "",
-        f"From:    {headers.get('From', 'unknown')}",
-        f"Subject: {headers.get('Subject', '')}",
-        f"Proposed Action: {tool_name}",
-        "",
-        "Arguments:",
-    ]
-    for key, val in args.items():
-        lines.append(f"  {key}: {val}")
-
-    lines += [
-        "",
-        f"Workflow ID: {workflow_id}",
-        "Reply APPROVE or REJECT to this email."
-    ]
-    return "\n".join(lines)

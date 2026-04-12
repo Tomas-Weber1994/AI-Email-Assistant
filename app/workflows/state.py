@@ -1,6 +1,8 @@
-from typing import Annotated, TypedDict, Literal, Optional, List
+from typing import Annotated, TypedDict, Optional, List
 from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
+from app.schemas.classification import EmailLabel
+from app.schemas.api import ApprovalDecision, WorkflowStatus
 
 
 def merge_messages(existing: List[BaseMessage], new: List[BaseMessage]) -> List[BaseMessage]:
@@ -32,14 +34,18 @@ def merge_audit_log(existing: List[str], new: List[str]) -> List[str]:
     return current + incoming
 
 class EmailClassification(BaseModel):
-    label: Literal["MEETING_REQUEST", "TASK", "INFO_ONLY", "SALES_OUTREACH", "MARKETING", "SPAM"]
+    label: EmailLabel
     is_urgent: bool = Field(default=False)
+
 
 class EmailAgentState(TypedDict):
     email_id: str
     messages: Annotated[List[BaseMessage], merge_messages]
     raw_content: dict
     classification: Optional[EmailClassification]
+    analyze_passes: int
+    terminal_action_done: bool
+    manager_decision: Optional[ApprovalDecision]
     pending_approval_tool_calls: Optional[List[dict]]
-    status: Literal["processing", "waiting_approval", "completed", "error"]
+    status: WorkflowStatus
     audit_log: Annotated[List[str], merge_audit_log]

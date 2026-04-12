@@ -1,5 +1,4 @@
 """FastAPI dependency factories — wires together auth + services."""
-
 from fastapi import Request
 
 from app.auth import get_authorized_http

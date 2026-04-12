@@ -1,118 +1,115 @@
 from typing import Literal
+import logging
+import functools
 
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import HumanMessage, ToolMessage
 
 from app.workflows.state import EmailAgentState
-from app.workflows.nodes import ingest_node, classify_node, ask_approval_node, cleanup_node, analyze_node
+from app.schemas.api import ApprovalDecision, WorkflowStatus
+from app.workflows.nodes import (
+    ingest_node,
+    classify_node,
+    ask_approval_node,
+    cleanup_node,
+    analyze_node,
+)
 from app.workflows.tools import get_all_tools, get_sensitive_tool_names
+from app.workflows.policies import ApprovalPolicy, StandardApprovalPolicy
+
+logger = logging.getLogger(__name__)
 
 
-# --- ROUTING LOGIC (Srdce grafu kombinující V1 a V2) ---
+# --- ROUTING LOGIC ---
 
-def routing_logic(state: EmailAgentState) -> Literal["tools", "ask_approval", "cleanup"]:
+def routing_logic(state: EmailAgentState, policy: ApprovalPolicy) -> Literal["tools", "ask_approval", "cleanup"]:
     """
-    Rozhoduje o dalším kroku na základě klasifikace, historie zpráv a provedených akcí.
-    Implementuje striktní pravidla pro Human-in-the-loop a zamezuje zacyklení.
+    Determines the next node from analyze.
+    Policy encapsulates all label-specific approval rules;
+    the router only handles universal flow-control conditions.
     """
     classification = state.get("classification")
     messages = state.get("messages", [])
 
-    if not classification or state.get("status") == "error":
+    # Guard: abort on missing classification or error state.
+    if not classification or state.get("status") == WorkflowStatus.ERROR:
+        logger.debug("Routing to cleanup (no classification or error state)")
         return "cleanup"
 
-    # --- 1. POJISTKA PROTI ZACYKLENÍ ---
-    # Pokud poslední zpráva v historii je potvrzení o archivaci, workflow končí.
-    if messages:
-        last_msg = messages[-1]
-        if isinstance(last_msg, ToolMessage) and (
-            "Archived with labels" in last_msg.content or "Moved to SPAM" in last_msg.content
-        ):
-            return "cleanup"
-
-    # --- 2. VYHODNOCENÍ LIDSKÉHO ROZHODNUTÍ (Approval/Reject) ---
-    # Najdeme poslední zprávu od člověka v historii.
-    last_human_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
-
-    # Pokud manažer zamítl (REJECT), jdeme rovnou do cleanup (zápis logu a konec).
-    if last_human_msg and "REJECT" in last_human_msg.content.upper():
+    # 1. Explicit terminal flag set by analyze after terminal tool completion.
+    if state.get("terminal_action_done"):
+        logger.debug("Routing to cleanup (terminal_action_done=true)")
         return "cleanup"
 
-    # Prověříme, zda máme schválení (APPROVE).
-    has_approval = last_human_msg and "APPROVE" in last_human_msg.content.upper()
+    # 2. Explicit manager rejection short-circuits to cleanup.
+    manager_decision = state.get("manager_decision")
+    if manager_decision == ApprovalDecision.REJECT:
+        logger.debug("Routing to cleanup (manager rejected)")
+        return "cleanup"
 
-    # --- 3. KONTROLA NÁSTROJŮ ---
-    # Podíváme se, co AI navrhla v poslední zprávě.
+    # 3. Check for pending tool calls from the last LLM output.
     last_ai_msg = next((m for m in reversed(messages) if hasattr(m, "tool_calls")), None)
-
-    if not last_ai_msg:
-        return "cleanup"
-
-    tool_calls = getattr(last_ai_msg, "tool_calls", [])
-
-    # SPAM, MARKETING a INFO_ONLY (pokud není urgentní) jdou na tools jen s validním tool_call.
-    if classification.label in ["SPAM", "MARKETING", "INFO_ONLY"] and not classification.is_urgent:
-        return "tools" if tool_calls else "cleanup"
-
+    tool_calls = list(getattr(last_ai_msg, "tool_calls", []) or []) if last_ai_msg else []
     if not tool_calls:
+        logger.debug("Routing to cleanup (no tool calls proposed)")
         return "cleanup"
 
-    sensitive_tools = get_sensitive_tool_names()
-    requires_approval = any(tc["name"] in sensitive_tools for tc in tool_calls)
+    # Already approved — bypass policy check.
+    if manager_decision == ApprovalDecision.APPROVE:
+        logger.debug("Routing to tools (manager approved): %s", [tc["name"] for tc in tool_calls])
+        return "tools"
 
-    # Pokud nástroj vyžaduje schválení a my ho ještě nemáme, jdeme do approval uzlu.
-    if requires_approval and not has_approval:
+    # Delegate approval decision to the injected policy.
+    if policy.requires_approval(state, tool_calls):
+        logger.debug("Routing to ask_approval (policy blocked): %s", [tc["name"] for tc in tool_calls])
         return "ask_approval"
 
-
-    # Ve všech ostatních případech (buď není schválení potřeba, nebo už bylo uděleno) jdeme na tools.
+    logger.debug("Routing to tools: %s", [tc["name"] for tc in tool_calls])
     return "tools"
 
 
-# --- KONSTRUKCE KOMPLETNÍHO GRAFU ---
+# --- GRAPH CONSTRUCTION ---
 
-def create_email_graph(checkpointer):
+def create_email_graph(checkpointer, policy: ApprovalPolicy | None = None):
+    """
+    Builds and compiles the email-processing LangGraph.
+    An optional ApprovalPolicy can be injected; defaults to StandardApprovalPolicy.
+    """
+    if policy is None:
+        policy = StandardApprovalPolicy(get_sensitive_tool_names())
+
+    # Bind policy into routing_logic, producing a plain (state) -> str callable.
+    router = functools.partial(routing_logic, policy=policy)
+
     workflow = StateGraph(EmailAgentState)
 
-    # Přidání uzlů
-    workflow.add_node("ingest", ingest_node)  # Stažení emailu [cite: 6]
-    workflow.add_node("classify", classify_node)  # LLM klasifikace [cite: 11]
-    workflow.add_node("analyze", analyze_node)  # Návrh tool_calls [cite: 15]
-    workflow.add_node("tools", ToolNode(get_all_tools()))  # Provedení akcí [cite: 13]
-    workflow.add_node("ask_approval", ask_approval_node)  # Email manažerovi [cite: 17, 21]
-    workflow.add_node("cleanup", cleanup_node)  # Audit log a ukončení
+    # Register nodes
+    workflow.add_node("ingest", ingest_node)
+    workflow.add_node("classify", classify_node)
+    workflow.add_node("analyze", analyze_node)
+    workflow.add_node("tools", ToolNode(get_all_tools(), handle_tool_errors=True))
+    workflow.add_node("ask_approval", ask_approval_node)
+    workflow.add_node("cleanup", cleanup_node)
 
-    # Definice hran (Workflow)
     workflow.set_entry_point("ingest")
-
     workflow.add_edge("ingest", "classify")
     workflow.add_edge("classify", "analyze")
 
-    # Hlavní rozhodovací bod po analýze
+    # analyze is the central routing hub
     workflow.add_conditional_edges(
         "analyze",
-        routing_logic,
-        {
-            "tools": "tools",
-            "ask_approval": "ask_approval",
-            "cleanup": "cleanup"
-        }
+        router,
+        {"tools": "tools", "ask_approval": "ask_approval", "cleanup": "cleanup"},
     )
 
-    # Po schválení se vracíme do analýzy (aby model mohl potvrdit tool_call)
-    # Nebo lze jít přímo do tools, pokud routing_logic po APPROVE vrátí 'tools'
-    # NEBO??? workflow.add_edge("ask_approval", END)  # Přerušení běhu (čekání na externí event/resume)
+    # Loop back to analyze for re-evaluation after tools or approval.
     workflow.add_edge("ask_approval", "analyze")
-
-    # Po vykonání nástrojů se vracíme na analýzu pro kontrolu výsledku nebo další krok
     workflow.add_edge("tools", "analyze")
 
-    # Cleanup je konečná stanice
     workflow.add_edge("cleanup", END)
 
-    # Kompilace s přerušením pro Human-in-the-loop 
+    # Compile with checkpointer; interrupt after ask_approval for human-in-the-loop.
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_after=["ask_approval"]
+        interrupt_after=["ask_approval"],
     )

@@ -3,6 +3,8 @@ from email.message import EmailMessage
 from typing import Any
 
 from app.services.base import GoogleService
+from app.schemas.classification import GmailSystemLabel
+from app.settings import settings
 from app.utils.email_utils import get_headers
 
 
@@ -35,7 +37,11 @@ class GmailService(GoogleService):
 
     def list_unread(self, max_results: int = 20) -> list[dict[str, Any]]:
         # Exclude approval control emails from normal inbox processing.
-        query = f'label:INBOX is:unread -label:PENDING_APPROVAL -subject:"{self.APPROVAL_SUBJECT_TAG}"'
+        query = (
+            f'label:INBOX is:unread '
+            f'-label:{GmailSystemLabel.PENDING_APPROVAL.value} '
+            f'-subject:"{self.APPROVAL_SUBJECT_TAG}"'
+        )
         request = self.service.users().messages().list(
             userId=self.USER_ID,
             q=query,
@@ -105,7 +111,6 @@ class GmailService(GoogleService):
         return self._send_raw(message)
 
     def send_approval_request(self, original_msg: dict[str, Any], action_summary: str, workflow_id: str | None) -> dict[str, Any]:
-        from app.settings import settings
 
         headers = get_headers(original_msg)
         source_subject = headers.get("Subject", "No Subject")

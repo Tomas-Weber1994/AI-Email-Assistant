@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from starlette.concurrency import run_in_threadpool
 
 from app.dependencies import get_gmail, get_calendar, get_workflow_manager
-from app.schemas.api import ApprovalPayload
+from app.schemas.api import ApprovalPayload, WorkflowStatus
 from app.services.calendar_service import CalendarService
 from app.services.gmail_service import GmailService
 from app.services.workflow_manager import WorkflowManager
@@ -17,7 +17,10 @@ async def test_connection(
         gmail: GmailService = Depends(get_gmail),
         calendar: CalendarService = Depends(get_calendar),
 ):
-    """Diagnostický endpoint pro ověření spojení s Google API."""
+    """
+    Diagnostic check of services
+    Verifies that Gmail and Calendar APIs are reachable and credentials are valid.
+    """
     try:
         return {
             "status": "success",
@@ -33,7 +36,7 @@ async def test_connection(
 
 @router.post("/process-emails")
 async def process_emails(manager: WorkflowManager = Depends(get_workflow_manager)):
-    """Manuální trigger pro okamžité prohledání inboxu."""
+    """Manual trigger the process of emails."""
     try:
         results = await manager.process_unread()
         return {"status": "triggered", "count": len(results), "results": results}
@@ -45,19 +48,14 @@ async def process_emails(manager: WorkflowManager = Depends(get_workflow_manager
 @router.post("/approve")
 async def approve(
         payload: ApprovalPayload,
-        manager: WorkflowManager = Depends(get_workflow_manager)
+        manager: WorkflowManager = Depends(get_workflow_manager),
 ):
-    """
-    Endpoint pro schválení/zamítnutí akce (např. z UI nebo webhooku).
-    Využívá mechanismus Command(resume=...) k probuzení grafu.
-    """
+    """Manually trigger approval procedure with manager's decision."""
     try:
-        logger.info(f"API Approve: workflow={payload.workflow_id} decision={payload.decision}")
-
-        # Předpokládáme, že payload.workflow_id odpovídá email_id (thread_id v LangGraphu)
+        logger.info("API Approve: workflow=%s decision=%s", payload.workflow_id, payload.decision)
         result = await manager.resume_with_decision(payload.workflow_id, payload.decision)
 
-        if result.get("status") == "error":
+        if result.get("status") == WorkflowStatus.ERROR:
             raise HTTPException(status_code=500, detail="Approval resume failed")
 
         return result

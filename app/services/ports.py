@@ -25,6 +25,13 @@ class EmailProvider(Protocol):
 
     def send_message(self, to: str, subject: str, body: str) -> dict[str, Any]: ...
 
+    def send_approval_request(
+        self,
+        original_msg: dict[str, Any],
+        action_summary: str,
+        workflow_id: str | None,
+    ) -> dict[str, Any]: ...
+
 
 class CalendarProvider(Protocol):
     """Port for calendar availability and event creation."""
