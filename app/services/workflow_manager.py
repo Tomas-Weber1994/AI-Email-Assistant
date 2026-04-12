@@ -45,12 +45,17 @@ class WorkflowManager:
             email_id = msg["id"]
             thread_id = msg.get("threadId") or email_id
 
-            # Skip if workflow is already in PENDING_APPROVAL state
+            # --- OCHRANA PROTI DUPLICITÁM (Race Condition Prevention) ---
+            # 1. Okamžitě odebereme UNREAD, aby další polling cyklus tento email ignoroval.
+            await self._run(self.email.modify_labels, email_id, remove=[GmailReservedLabel.UNREAD.value])
+
+            # 2. Skip pokud už na tomto threadu visí schválení (bezpečnostní pojistka).
             is_pending = await self._run(self.email.has_label, email_id, GmailSystemLabel.PENDING_APPROVAL.value)
             if is_pending:
-                logger.info(f"Skipping email {email_id}: pending manager approval.")
+                logger.info("Skipping email %s: already pending manager approval.", email_id)
                 continue
 
+            logger.info("Starting workflow for email %s", email_id)
             results.append(await self.process_new_email(email_id, thread_id))
 
         return results
@@ -61,7 +66,6 @@ class WorkflowManager:
         try:
             return await self._run(self.graph.invoke, {"email_id": email_id}, config)
         except Exception as e:
-            # Fallback to state lookup for auditing if invocation fails
             label = "UNCLASSIFIED"
             try:
                 snapshot = await self._run(self.graph.get_state, config)
@@ -83,33 +87,32 @@ class WorkflowManager:
             msg_id = reply["id"]
             msg = await self._run(self.email.get_message, msg_id)
 
-            # Parse decision from text body
             body_text = f"{msg.get('snippet', '')}\n{get_body(msg)}"
             decision = self._parse_decision(body_text)
             workflow_id = self._extract_workflow_id(msg)
 
             if decision and workflow_id:
                 await self.resume_with_decision(workflow_id, decision)
-                # Mark manager's reply as processed
+                # Označíme odpověď manažera za vyřízenou
                 await self._run(self.email.modify_labels, msg_id, remove=[GmailReservedLabel.UNREAD.value])
 
     async def resume_with_decision(self, thread_id: str, decision: ApprovalDecision) -> Dict[str, Any]:
         """Resumes a workflow with the manager's APPROVE/REJECT input."""
         config = self._get_config(thread_id)
         try:
-            # Get original email_id from state to update its labels later
             snapshot = await self._run(self.graph.get_state, config)
             email_id = snapshot.values.get("email_id") if snapshot else None
 
-            # Inject decision into graph state
+            # Injekce rozhodnutí do stavu grafu
             await self._run(self.graph.update_state, config, {
                 "messages": [HumanMessage(content=decision.value)],
                 "manager_decision": decision,
             })
 
-            # Resume execution
+            # Pokračování v exekuci
             result = await self._run(self.graph.invoke, None, config)
 
+            # Pokud vše proběhlo, odstraníme dočasný label PENDING_APPROVAL
             if email_id:
                 await self._run(self.email.modify_labels, email_id, remove=[GmailSystemLabel.PENDING_APPROVAL.value])
 
@@ -132,13 +135,7 @@ class WorkflowManager:
         return None
 
     @staticmethod
-    def _extract_manager_decision(text: str) -> Optional[ApprovalDecision]:
-        """Backward-compatible alias used by older tests/callers."""
-        return WorkflowManager._parse_decision(text)
-
-    @staticmethod
     def _extract_workflow_id(msg: Dict[str, Any]) -> Optional[str]:
-        """Extract workflow id from [WF:...] tag in subject/body; fallback to threadId."""
         headers = get_headers(msg)
         subject = headers.get("Subject", "")
         body = f"{msg.get('snippet', '')}\n{get_body(msg)}"
@@ -148,12 +145,10 @@ class WorkflowManager:
             if match:
                 return match.group(1).strip()
 
-        # Fallback for legacy approval emails that do not include the WF tag.
         return msg.get("threadId")
 
     @staticmethod
     def _error_response(email_id: Optional[str], thread_id: str, error: Exception) -> Dict[str, Any]:
-        """Standardized error output for API and logging."""
         logger.error(f"Critical error on thread {thread_id}: {error}", exc_info=True)
         return {
             "email_id": email_id,
@@ -164,7 +159,6 @@ class WorkflowManager:
 
     @staticmethod
     def _emit_audit(email_id: str, label: str, error: Exception) -> None:
-        """Logs the failure into the audit trail."""
         entry = {
             "email_id": email_id,
             "label": label,
@@ -175,5 +169,4 @@ class WorkflowManager:
 
     @staticmethod
     async def _run(func, *args, **kwargs) -> Any:
-        """Executes sync I/O in a threadpool to prevent blocking."""
         return await run_in_threadpool(func, *args, **kwargs)

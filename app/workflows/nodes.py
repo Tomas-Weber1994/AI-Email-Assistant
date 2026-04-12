@@ -68,37 +68,37 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
     """The brain of the agent. Decides the next action based on message history."""
     passes = int(state.get("analyze_passes", 0)) + 1
 
-    # Safety guard for infinite loops
+    # 1. Safety guard for infinite loops
     if passes > settings.MAX_ANALYZE_PASSES:
         return {"status": WorkflowStatus.ERROR, "audit_log": ["ERROR: Max passes reached."]}
 
-    # Check the last message
+    # 2. DETERMINISTIC BYPASS: If manager approved, replay once and CONSUME state.
+    # We clear both decision and pending calls to prevent any loop or race condition.
+    if state.get("manager_decision") == ApprovalDecision.APPROVE:
+        pending_tools = state.get("pending_approval_tool_calls") or []
+        if pending_tools:
+            logger.info("Manager approved. Replaying tool calls and consuming decision state.")
+            return {
+                "messages": [
+                    AIMessage(content="Executing manager-approved actions.", tool_calls=deepcopy(pending_tools))],
+                "analyze_passes": passes,
+                "manager_decision": None,  # Consume decision
+                "pending_approval_tool_calls": None,  # Clear pending calls
+                "audit_log": [f"ANALYZE: Replayed approved tools: {[t['name'] for t in pending_tools]}"],
+            }
+
+    # 3. Check for terminal state
     last_msg = state["messages"][-1] if state["messages"] else None
-
-    # On explicit APPROVE, replay the exact approved tool calls (no LLM re-generation).
-    pending = state.get("pending_approval_tool_calls") or []
-    if (
-        state.get("manager_decision") == ApprovalDecision.APPROVE
-        and isinstance(last_msg, HumanMessage)
-        and str(last_msg.content).strip().upper().startswith(ApprovalDecision.APPROVE.value)
-        and pending
-    ):
-        return {
-            "messages": [AIMessage(content="Replaying manager-approved actions.", tool_calls=deepcopy(pending))],
-            "analyze_passes": passes,
-            "audit_log": [f"ANALYZE: Replaying approved tools: {[tc['name'] for tc in pending]}"],
-        }
-
-    # Check for terminal state
     if isinstance(last_msg, ToolMessage) and last_msg.name == ToolName.ARCHIVE_AND_LABEL.value:
         return {"terminal_action_done": True, "audit_log": ["ANALYZE: Terminal tool finished."]}
 
-    # PREPARE HISTORY
+    # 4. Standard Agent logic
     history = sanitize_messages_for_openai(state["messages"])
 
+    # If a reply was just sent, force the model to archive in the next step.
     if isinstance(last_msg, ToolMessage) and last_msg.name == ToolName.SEND_REPLY.value:
         history.append(SystemMessage(
-            content="You have successfully sent the reply. Now you MUST call archive_and_label to finish this email processing."))
+            content="Reply sent successfully. Now you MUST call archive_and_label to finalize this email."))
 
     messages = [SystemMessage(content=get_agent_system_prompt())] + history
 
@@ -118,29 +118,25 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
 
 
 def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
-    """Sends a request for manual approval for sensitive actions."""
+    """Sends a request for manual approval and pauses the workflow."""
     runtime = get_runtime_config(config)
     email_service = runtime["email"]
 
-    # Retrieve tool calls from the last AI message
-    last_ai_msg = next((m for m in reversed(state["messages"]) if hasattr(m, "tool_calls")), None)
+    last_ai_msg = next((m for m in reversed(state["messages"]) if hasattr(m, "tool_calls") and m.tool_calls), None)
     tool_calls = getattr(last_ai_msg, "tool_calls", []) if last_ai_msg else []
 
     if not tool_calls:
+        logger.error("ask_approval_node called without tool_calls.")
         return {"status": WorkflowStatus.ERROR}
 
-    # If we are already waiting for approval for the same pending actions, do not resend.
-    pending = state.get("pending_approval_tool_calls") or []
-    if state.get("status") == WorkflowStatus.WAITING_APPROVAL and pending == tool_calls:
-        return {
-            "status": WorkflowStatus.WAITING_APPROVAL,
-            "audit_log": ["WAIT: Approval already requested; skipping duplicate notification."],
-        }
+    # Don't resend notification if we are already waiting
+    if state.get("status") == WorkflowStatus.WAITING_APPROVAL:
+        return {}
 
     action_summary = json.dumps([{"tool": tc["name"], "args": tc["args"]} for tc in tool_calls])
     email_service.send_approval_request(state["raw_content"], action_summary, runtime.get("thread_id"))
 
-    # Mark the source email as pending approval so unread polling does not re-ingest it.
+    # Apply PENDING_APPROVAL label to Gmail message
     email_service.modify_labels(
         state["email_id"],
         add=[GmailSystemLabel.PENDING_APPROVAL.value],
@@ -154,14 +150,15 @@ def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
 
 
 def cleanup_node(state: EmailAgentState, config: RunnableConfig | None = None):
-    """Finalizes the workflow and logs the outcome."""
+    """Finalizes the workflow and logs the audit record."""
     email_id = state.get("email_id")
-    outcome = "SUCCESS"
 
     if state.get("status") == WorkflowStatus.ERROR:
         outcome = "ERROR"
     elif state.get("manager_decision") == ApprovalDecision.REJECT:
         outcome = "REJECTED_BY_MANAGER"
+    else:
+        outcome = "SUCCESS"
 
     audit_record = {
         "email_id": email_id,
@@ -174,7 +171,7 @@ def cleanup_node(state: EmailAgentState, config: RunnableConfig | None = None):
     logger.info("Cleanup complete for %s. Outcome: %s", email_id, outcome)
 
     return {
-        "status": WorkflowStatus.COMPLETED,
+        "status": WorkflowStatus.COMPLETED if outcome != "ERROR" else WorkflowStatus.ERROR,
         "pending_approval_tool_calls": None,
         "manager_decision": None,
         "audit_log": [f"FINISH: Outcome {outcome}."]

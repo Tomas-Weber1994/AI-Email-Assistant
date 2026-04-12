@@ -55,9 +55,8 @@ class StandardApprovalPolicy(ApprovalPolicy):
 
         needs = any(tc["name"] in sensitive for tc in tool_calls)
         logger.debug(
-            "Policy check — tools: %s, sensitive: %s, requires_approval: %s",
+            "Policy check — tools: %s, requires_approval: %s",
             [tc["name"] for tc in tool_calls],
-            sorted(sensitive),
             needs,
         )
         return needs
