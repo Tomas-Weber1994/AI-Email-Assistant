@@ -1,9 +1,11 @@
 # app/services/base.py
 import logging
-from typing import Any
 from abc import ABC, abstractmethod
+from typing import Any
+
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
 
 class GoogleService(ABC):
     def __init__(self, service_name: str, version: str, auth_http):
@@ -13,19 +15,16 @@ class GoogleService(ABC):
         )
 
     def _call_google_api(self, request):
-        """
-        Calls a Google API request with standardized error handling.
-        """
+        """Execute a Google API request with standardized error logging."""
         try:
             return request.execute()
         except HttpError as e:
-            self.logger.error(f"Google API Error: {e.content}")
-            raise e
+            self.logger.error("Google API error status=%s: %s", e.resp.status, e.content)
+            raise
         except Exception as e:
-            self.logger.error(f"Unexpected error during API call: {e}")
-            raise e
+            self.logger.error("Unexpected error during API call: %s", e)
+            raise
 
     @abstractmethod
     def test_connection(self) -> dict:
-        """Each service must implement its own connection test method."""
-        pass
+        raise NotImplementedError

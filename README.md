@@ -1,23 +1,20 @@
 # AI Email & Calendar Assistant
 
-An AI agent that **automatically monitors** a Gmail inbox, classifies incoming emails using GPT-4o,
-and takes autonomous actions — including calendar coordination and human-in-the-loop approval.
-
-The agent runs a **background polling loop** (default: every 60s) that processes new emails
-and checks for manager approval replies. No manual API calls required — just start the server.
+An AI agent that monitors a Gmail inbox, classifies incoming emails using GPT, and executes actions
+through a LangGraph state machine with persistent checkpoints and human approval interrupts.
 
 ## Architecture
 
 ```
-FastAPI API  →  AgentRunner  →  LangGraph Workflow  →  Gmail / Calendar APIs
+FastAPI API  →  WorkflowManager  →  LangGraph Workflow  →  Provider Ports  →  Google Services
                                     │
-                    ┌───────────────┼───────────────────┐
-                    ▼               ▼                   ▼
-                Ingest  →  Classify (LLM)  →  Action dispatch
-                                │                │    │    │
-                            Approval?       Archive  Spam  Flag+Notify
-                                │                         │
-                          Manager email            Calendar → Reply
+                    ┌───────────────┼────────────────────────────┐
+                    ▼               ▼                            ▼
+                Ingest  →  Classify (structured output)  →  Action dispatch
+                                │
+                       interrupt() on approval
+                                │
+                          invoke(Command(resume=...))
 ```
 
 ### Workflow nodes
@@ -27,6 +24,7 @@ FastAPI API  →  AgentRunner  →  LangGraph Workflow  →  Gmail / Calendar AP
 | `ingest`   | Fetch raw email from Gmail API                      |
 | `classify` | LLM classification → label + action + urgency       |
 | `approval` | Send approval request email to manager               |
+| `wait_approval` | Interrupt workflow and wait for APPROVE/REJECT |
 | `action`   | Dispatch: archive / spam / flag+notify based on action |
 | `calendar` | Check availability + create Google Calendar event    |
 | `reply`    | Send auto-reply within the original thread           |
@@ -53,11 +51,11 @@ FastAPI API  →  AgentRunner  →  LangGraph Workflow  →  Gmail / Calendar AP
 - OpenAI API key
 
 ### 1. Clone and install
-```bash
+```powershell
 git clone <repo-url>
 cd AiEmailAgent
 python -m venv env
-source env/bin/activate  # or env\Scripts\activate on Windows
+env\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -68,7 +66,7 @@ pip install -r requirements.txt
 4. Run the auth flow once locally to generate `credentials/token.json`.
 
 ### 3. Environment variables
-```bash
+```powershell
 cp .env.example .env
 # Edit .env with your values
 ```
@@ -87,7 +85,7 @@ cp .env.example .env
 | `DB_PATH`        | No       | SQLite DB path (default: `data/agent.db`) |
 
 ### 4. Run
-```bash
+```powershell
 python main.py
 ```
 
@@ -96,15 +94,15 @@ python main.py
 | Method | Path                       | Description                          |
 |--------|----------------------------|--------------------------------------|
 | GET    | `/api/v1/test-connection`  | Test Gmail + Calendar connectivity   |
-| POST   | `/api/v1/process-emails`   | Process unread emails + approved retries |
-| POST   | `/api/v1/check-approvals`  | Check manager replies on pending approvals |
+| POST   | `/api/v1/process-emails`   | Process unread emails                |
+| POST   | `/api/v1/approve`          | Resume interrupted workflow (APPROVE/REJECT) |
 
 ### How it works
-1. On startup, the agent begins polling Gmail every `POLL_INTERVAL_SECONDS` (default: 60s).
-2. New unread emails are fetched, classified by LLM, and actions are executed automatically.
-3. Emails requiring approval (calendar events, urgent tasks) trigger an email to `MANAGER_EMAIL`.
-4. Manager replies APPROVE or REJECT — the next poll cycle picks up the decision.
-5. Approved actions (calendar events, replies) are executed on the following poll cycle.
+1. New unread emails are submitted to `WorkflowManager`.
+2. LangGraph executes `ingest -> classify -> action` and interrupts on approval-required paths.
+3. Approval request is sent to `MANAGER_EMAIL`, then graph waits in checkpointed state.
+4. Manager replies `APPROVE`/`REJECT` to the approval email; poller resumes the checkpointed workflow.
+5. Approved path continues from checkpoint to calendar/reply without reclassification.
 
 API endpoints are also available for manual triggers and debugging.
 
@@ -112,36 +110,42 @@ API endpoints are also available for manual triggers and debugging.
 
 ```
 app/
-├── agent/          # LangGraph workflow
-│   ├── actions.py  # Atomic Gmail/Calendar actions
-│   ├── graph.py    # Graph construction + routing
-│   ├── nodes.py    # Workflow node functions
-│   ├── prompts.py  # LLM prompt templates
-│   └── state.py    # AgentState TypedDict
+├── workflows/
+│   ├── email_graph.py   # LangGraph factory + routing
+│   ├── prompts.py       # LLM prompt templates for workflow nodes
+│   ├── state.py         # Unified EmailAgentState
+│   └── nodes/           # Small single-purpose workflow nodes
 ├── api/
 │   └── endpoints.py
 ├── schemas/
-│   └── classification.py  # Pydantic models (EmailRecord, EmailClassification)
+│   ├── api.py             # API payload models
+│   └── classification.py  # Enums + EmailClassification schema
 ├── services/
-│   ├── agent_runner.py    # Orchestrator (idempotency, retry logic)
-│   ├── approval.py        # Approval polling service
+│   ├── workflow_manager.py # WorkflowManager (event delivery only)
+│   ├── ports.py           # Email/Calendar provider protocols
 │   ├── base.py            # Google API base class
-│   └── google.py          # Gmail + Calendar service classes
+│   ├── gmail_service.py   # Gmail service implementation
+│   └── calendar_service.py # Calendar service implementation
 ├── utils/
 │   ├── email_utils.py     # Email parsing helpers
 │   ├── logging_config.py  # Logging setup
 │   └── time_utils.py      # Time helpers
-├── auth.py         # Google OAuth2
-├── database.py     # SQLite persistence
-├── dependencies.py # FastAPI DI factories
-└── settings.py     # Pydantic Settings
+├── auth.py           # Google OAuth2
+├── dependencies.py   # FastAPI DI factories
+└── settings.py       # Pydantic Settings
 ```
 
 ## Non-Functional Requirements
 
-- **Audit trail**: Every processed email produces structured log entries stored in DB (`audit_trail` field on `EmailRecord`).
-- **Error handling**: `safe_execute` wrapper catches exceptions per node, logs them, persists state, and short-circuits the remaining workflow.
-- **Idempotency**: Emails already processed (with classification) are skipped. Incomplete records (failed mid-workflow) are automatically retried.
-- **Human-in-the-loop**: Calendar events and manager-facing replies require email confirmation (APPROVE/REJECT) before execution.
+- **Audit trail**: Every node appends structured entries in `EmailAgentState.audit_log`.
+- **Error handling**: Node failures stay localized and are surfaced in workflow output.
+- **Idempotency**: Workflow state is checkpointed per thread/workflow id and resumed without re-running prior steps.
+- **Human-in-the-loop**: Approval uses LangGraph `interrupt()` and explicit resume command.
+
+## Smoke Test (local, no Google/OpenAI calls)
+
+```powershell
+python scripts/smoke_workflow.py
+```
 
 

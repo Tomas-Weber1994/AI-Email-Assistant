@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     APP_PORT: int = 9000
     LOG_LEVEL: str = "INFO"
     POLL_INTERVAL_SECONDS: int = 60
+    MAX_ANALYZE_PASSES: int = 4
 
     # Proxy
     PROXY_HOST: str | None = None
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
     # Google
     GMAIL_USER: str = ""
     MANAGER_EMAIL: str = ""  # email address to send approval requests to
+    SALES_REPLY_REQUIRES_APPROVAL: bool = False
 
     # OpenAI
     OPENAI_API_KEY: str = ""
@@ -46,6 +48,22 @@ class Settings(BaseSettings):
         if value in (None, ""):
             return None
         return int(value)
+
+    @field_validator("MAX_ANALYZE_PASSES", mode="before")
+    @classmethod
+    def validate_max_analyze_passes(cls, value):
+        passes = int(value)
+        if passes < 1:
+            raise ValueError("MAX_ANALYZE_PASSES must be >= 1")
+        return passes
+
+    @field_validator("MANAGER_EMAIL", mode="before")
+    @classmethod
+    def validate_manager_email(cls, value):
+        manager_email = str(value or "").strip()
+        if not manager_email:
+            raise ValueError("MANAGER_EMAIL is required for approval workflows.")
+        return manager_email
 
     @property
     def proxy_url(self) -> str | None:

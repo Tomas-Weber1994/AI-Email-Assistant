@@ -2,9 +2,6 @@
 
 import base64
 
-from app.schemas.classification import EmailClassification
-from app.utils.time_utils import in_one_hour_iso
-
 
 def get_headers(raw_msg: dict) -> dict:
     """Returns Gmail message headers as a plain dict."""
@@ -30,20 +27,26 @@ def get_body(raw_msg: dict) -> str:
     return raw_msg.get("snippet", "")
 
 
-def build_approval_email(headers: dict, cls: EmailClassification) -> str:
-    """Builds the approval request email body sent to the manager."""
+def build_approval_email(headers: dict, tool_call: dict, workflow_id: str) -> str:
+    """Sestaví tělo emailu pro manažera na základě navrženého tool callu."""
+    tool_name = tool_call.get("name")
+    args = tool_call.get("args", {})
+
     lines = [
         "AI Agent — Approval Required",
         "",
         f"From:    {headers.get('From', 'unknown')}",
         f"Subject: {headers.get('Subject', '')}",
-        f"Label:   {cls.primary_label.value}{' + URGENT' if cls.is_urgent else ''}",
-        f"Action:  {cls.proposed_action.value}",
-        f"Reason:  {cls.justification}",
+        f"Proposed Action: {tool_name}",
+        "",
+        "Arguments:",
     ]
-    if cls.meeting_start:
-        lines.append(f"Meeting: {cls.meeting_start} → {cls.meeting_end or in_one_hour_iso()}")
-    if cls.suggested_reply:
-        lines += ["", "Suggested reply:", cls.suggested_reply]
-    lines += ["", "Reply APPROVE or REJECT to this email."]
+    for key, val in args.items():
+        lines.append(f"  {key}: {val}")
+
+    lines += [
+        "",
+        f"Workflow ID: {workflow_id}",
+        "Reply APPROVE or REJECT to this email."
+    ]
     return "\n".join(lines)
