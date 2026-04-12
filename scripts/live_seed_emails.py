@@ -18,11 +18,11 @@ class SeedEmail(TypedDict):
 TEST_EMAILS: list[SeedEmail] = [
 	{
 		"subject": "Discussion: Q3 Strategy Roadmap",
-		"body": "Hi, I would like to schedule a 45-minute meeting to discuss the Q3 roadmap. Are you free on 2026-04-15 at 14:00 UTC?",
+		"body": "Hi, I would like to schedule a 45-minute meeting to discuss the Q3 roadmap. Are you free on 2026-04-15 at 14:00?",
 	},
 	{
 		"subject": "Partnership Sync",
-		"body": "Hello, let's have a quick sync regarding the new partnership. How about 2026-04-15T10:00:00Z? It should take about an hour.",
+		"body": "Hello, let's have a quick sync regarding the new partnership. How about 2026-04-15 at 10:00? It should take about an hour.",
 	},
 	{
 		"subject": "URGENT: Server Migration Issue - Action Required",

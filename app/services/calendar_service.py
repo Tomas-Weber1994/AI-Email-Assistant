@@ -6,6 +6,7 @@ from app.utils.time_utils import normalize_time_range
 
 class CalendarService(GoogleService):
     PRIMARY_CALENDAR = "primary"
+    LOCAL_TIMEZONE = "Europe/Prague"
 
     def __init__(self, auth_http):
         super().__init__("calendar", "v3", auth_http)
@@ -19,8 +20,8 @@ class CalendarService(GoogleService):
         normalized_start, normalized_end = normalize_time_range(start, end)
         event_body = {
             "summary": summary,
-            "start": {"dateTime": normalized_start, "timeZone": "UTC"},
-            "end": {"dateTime": normalized_end, "timeZone": "UTC"},
+            "start": {"dateTime": normalized_start, "timeZone": self.LOCAL_TIMEZONE},
+            "end": {"dateTime": normalized_end, "timeZone": self.LOCAL_TIMEZONE},
         }
         request = self.service.events().insert(calendarId=self.PRIMARY_CALENDAR, body=event_body)
         return self._call_google_api(request)
@@ -30,6 +31,7 @@ class CalendarService(GoogleService):
         body = {
             "timeMin": normalized_start,
             "timeMax": normalized_end,
+            "timeZone": self.LOCAL_TIMEZONE,
             "items": [{"id": self.PRIMARY_CALENDAR}],
         }
         res = self._call_google_api(self.service.freebusy().query(body=body))
