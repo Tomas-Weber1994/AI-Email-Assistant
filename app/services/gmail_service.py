@@ -35,7 +35,7 @@ class GmailService(GoogleService):
 
     def list_unread(self, max_results: int = 20) -> list[dict[str, Any]]:
         # Exclude approval control emails from normal inbox processing.
-        query = f'label:INBOX is:unread -subject:"{self.APPROVAL_SUBJECT_TAG}"'
+        query = f'label:INBOX is:unread -label:PENDING_APPROVAL -subject:"{self.APPROVAL_SUBJECT_TAG}"'
         request = self.service.users().messages().list(
             userId=self.USER_ID,
             q=query,
@@ -87,8 +87,9 @@ class GmailService(GoogleService):
 
     def send_reply(self, original_msg: dict[str, Any], text: str) -> dict[str, Any]:
         headers = get_headers(original_msg)
+        reply_text = str(text or "").replace("[Your Name]", "Manager (Automatic reply)")
         message = EmailMessage()
-        message.set_content(text)
+        message.set_content(reply_text)
         message["To"] = headers.get("From")
         message["Subject"] = f"Re: {headers.get('Subject', '')}"
         if message_id := headers.get("Message-ID"):
@@ -102,6 +103,34 @@ class GmailService(GoogleService):
         message["To"] = to
         message["Subject"] = subject
         return self._send_raw(message)
+
+    def send_approval_request(self, original_msg: dict[str, Any], action_summary: str, workflow_id: str | None) -> dict[str, Any]:
+        from app.settings import settings
+
+        headers = get_headers(original_msg)
+        source_subject = headers.get("Subject", "No Subject")
+        source_from = headers.get("From", "unknown")
+        workflow_ref = workflow_id or original_msg.get("threadId") or "unknown"
+
+        body = "\n".join([
+            "AI Agent - Approval Required",
+            "",
+            f"From: {source_from}",
+            f"Subject: {source_subject}",
+            "Proposed action:",
+            f"{action_summary}",
+            "",
+            f"Workflow ID: {workflow_ref}",
+            "Reply with APPROVE or REJECT.",
+        ])
+
+        message = EmailMessage()
+        message.set_content(body)
+        message["To"] = settings.MANAGER_EMAIL
+        message["Subject"] = f"{self.APPROVAL_SUBJECT_TAG} [WF:{workflow_ref}] {source_subject}"
+
+        # Prefer original thread_id so watcher can resume by thread_id.
+        return self._send_raw(message, thread_id=workflow_ref)
 
     def _send_raw(self, message: EmailMessage, thread_id: str | None = None) -> dict[str, Any]:
         body = {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}

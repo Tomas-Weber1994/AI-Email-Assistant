@@ -36,7 +36,7 @@ async def process_emails(manager: WorkflowManager = Depends(get_workflow_manager
     """Manuální trigger pro okamžité prohledání inboxu."""
     try:
         results = await manager.process_unread()
-        return {"status": "triggered", "count": len(results)}
+        return {"status": "triggered", "count": len(results), "results": results}
     except Exception:
         logger.exception("Manual process failed")
         raise HTTPException(status_code=500, detail="Manual processing failed")
@@ -55,7 +55,7 @@ async def approve(
         logger.info(f"API Approve: workflow={payload.workflow_id} decision={payload.decision}")
 
         # Předpokládáme, že payload.workflow_id odpovídá email_id (thread_id v LangGraphu)
-        result = await manager.resume_approval(payload.workflow_id, payload.decision.upper())
+        result = await manager.resume_with_decision(payload.workflow_id, payload.decision)
 
         if result.get("status") == "error":
             raise HTTPException(status_code=500, detail="Approval resume failed")

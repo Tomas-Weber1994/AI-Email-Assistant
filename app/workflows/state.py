@@ -1,35 +1,45 @@
-from operator import add
-from typing import Annotated, TypedDict, Literal, NotRequired
-from langchain_core.messages import BaseMessage
+from typing import Annotated, TypedDict, Literal, Optional, List
+from langchain_core.messages import BaseMessage, HumanMessage
+from pydantic import BaseModel, Field
 
+
+def merge_messages(existing: List[BaseMessage], new: List[BaseMessage]) -> List[BaseMessage]:
+    """Append conversation history, but reset on a fresh ingest HumanMessage."""
+    current = list(existing or [])
+    incoming = list(new or [])
+
+    if not incoming:
+        return current
+
+    first_msg = incoming[0]
+    if isinstance(first_msg, HumanMessage) and isinstance(first_msg.content, str) and first_msg.content.startswith("From: "):
+        return incoming
+
+    return current + incoming
+
+
+def merge_audit_log(existing: List[str], new: List[str]) -> List[str]:
+    """Append audit trail, but reset on a fresh workflow START entry."""
+    current = list(existing or [])
+    incoming = list(new or [])
+
+    if not incoming:
+        return current
+
+    if incoming[0].startswith("START:"):
+        return incoming
+
+    return current + incoming
+
+class EmailClassification(BaseModel):
+    label: Literal["MEETING_REQUEST", "TASK", "INFO_ONLY", "SALES_OUTREACH", "MARKETING", "SPAM"]
+    is_urgent: bool = Field(default=False)
 
 class EmailAgentState(TypedDict):
-    """
-    Single source of truth pro LangGraph.
-    Využívá historii zpráv pro rozhodování agenta.
-    """
-    # Identifikace
     email_id: str
-
-    # Historie komunikace (včetně tool calls a jejich výsledků)
-    # Annotated + add zajistí, že se nové zprávy připisují k existujícím
-    messages: Annotated[list[BaseMessage], add]
-
-    # Surová data pro potřeby toolů (např. odeslání reply vyžaduje original headers)
+    messages: Annotated[List[BaseMessage], merge_messages]
     raw_content: dict
-
-    # Status pro API/Frontend (processing, waiting_approval, completed, error)
+    classification: Optional[EmailClassification]
+    pending_approval_tool_calls: Optional[List[dict]]
     status: Literal["processing", "waiting_approval", "completed", "error"]
-
-    # Strukturovaný audit log pro finální report
-    audit_log: Annotated[list[str], add]
-
-    # Rozhodnutí ze schvalování (nastaveno při resume)
-    approval_decision: NotRequired[Literal["APPROVE", "REJECT"]]
-
-    # Marker, že během workflow už byl odeslán approval request
-    approval_requested: NotRequired[bool]
-
-    # Počet průchodů analyze uzlem (ochrana proti tool-loopu)
-    analyze_passes: NotRequired[int]
-
+    audit_log: Annotated[List[str], merge_audit_log]

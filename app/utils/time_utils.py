@@ -18,3 +18,30 @@ def to_rfc3339_utc(value: datetime) -> str:
 def in_one_hour_iso() -> str:
     """UTC time one hour from now as ISO 8601 string."""
     return to_rfc3339_utc(datetime.now(timezone.utc) + timedelta(hours=1))
+
+
+def parse_datetime_input(value: str) -> datetime:
+    """Parse incoming ISO/RFC3339 datetime text and normalize timezone handling."""
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        raise ValueError("datetime value is required")
+
+    normalized_value = raw_value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized_value)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO datetime: {raw_value}") from exc
+
+    return to_utc(parsed)
+
+
+def normalize_time_range(start: str, end: str) -> tuple[str, str]:
+    """Validate and normalize a start/end pair to RFC3339 UTC strings."""
+    start_dt = parse_datetime_input(start)
+    end_dt = parse_datetime_input(end)
+
+    if end_dt <= start_dt:
+        raise ValueError("end time must be after start time")
+
+    return to_rfc3339_utc(start_dt), to_rfc3339_utc(end_dt)
+

@@ -1,30 +1,20 @@
 import logging
-import re
-from typing import Dict, Any, List, Optional, Tuple, Set, Literal, cast
-from langchain_openai import ChatOpenAI
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command
+import uuid
+from typing import Literal, Any, Optional
 from starlette.concurrency import run_in_threadpool
-
-from app.schemas.api import ManagerReplyDecision
-from app.settings import settings
-from app.utils.email_utils import get_body, get_headers
 from app.workflows.graph import create_email_graph
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("agent.audit")
 
 
 class WorkflowManager:
-    def __init__(self, email, calendar, llm: ChatOpenAI, checkpointer: SqliteSaver):
+    def __init__(self, email, calendar, llm, checkpointer):
         self.email = email
         self.calendar = calendar
         self.llm = llm
         self.graph = create_email_graph(checkpointer)
-        # Lokální cache pro zamezení duplicitního spuštění v rámci jednoho běhu
-        self._processing_ids: Set[str] = set()
 
-    def _config(self, thread_id: str) -> RunnableConfig:
+    def _config(self, thread_id: str):
         return {
             "configurable": {
                 "thread_id": thread_id,
@@ -34,185 +24,139 @@ class WorkflowManager:
             }
         }
 
-    async def _invoke_graph(self, graph_input: Any, thread_id: str) -> Any:
-        """Run sync graph invoke safely from async code (SqliteSaver is sync-only)."""
-        return await run_in_threadpool(self.graph.invoke, graph_input, self._config(thread_id))
+    async def process_unread(self):
+        """
+        Načte nepřečtené e-maily z Inboxu a pro každý spustí nové workflow.
+        Tuto metodu volá _poll_loop v main.py.
+        """
+        unread_messages = await run_in_threadpool(self.email.list_unread)
 
-    async def process_unread(self, max_results: int = 20) -> List[Dict[str, Any]]:
-        """Načte nové emaily a spustí pro každý novou instanci grafu."""
-        unread = await run_in_threadpool(self.email.list_unread, max_results)
-        logger.info("Unread poll fetched %s messages (limit=%s)", len(unread), max_results)
+        if not unread_messages:
+            return []
 
-        for msg in unread:
-            email_id = msg.get("id")
-            if not email_id or email_id in self._processing_ids:
-                if not email_id:
-                    logger.warning("Skipping unread message without id: %s", msg)
-                else:
-                    logger.info("Skipping email %s - already processing in current run", email_id)
-                continue
+        logger.info(f"Nalezeno {len(unread_messages)} nových e-mailů ke zpracování.")
 
-            # Pojistka: Nekonáme, pokud už se na schválení čeká (label v Gmailu)
+        results = []
+        for msg_info in unread_messages:
+            email_id = msg_info["id"]
+            # thread_id je stabilní klíč workflow pro checkpointer/resume.
+            thread_id = msg_info.get("threadId") or email_id
+
             if await run_in_threadpool(self.email.has_label, email_id, "PENDING_APPROVAL"):
-                logger.info("Skipping email %s - pending approval already exists", email_id)
+                logger.info(f"Skipping email {email_id}: already waiting for manager approval.")
                 continue
 
-            self._processing_ids.add(email_id)
-            logger.info(f"Starting workflow for email: {email_id}")
+            # Spustíme zpracování nového e-mailu
+            result = await self.process_new_email(email_id, thread_id)
+            results.append(result)
 
-            try:
-                # Prvotní spuštění grafu
-                await self._invoke_graph({"email_id": email_id}, email_id)
-            finally:
-                self._processing_ids.discard(email_id)
+        return results
 
-        return unread
-
-    async def resume_approval(self, email_id: str, decision: str) -> Dict[str, Any]:
-        """Probuzení grafu po rozhodnutí manažera."""
-        normalized_decision = decision.strip().upper()
-        logger.info("Resume requested for workflow %s with decision=%s", email_id, normalized_decision)
-
-        has_pending = await run_in_threadpool(self.email.has_label, email_id, "PENDING_APPROVAL")
-        if not has_pending:
-            logger.warning("Resume skipped for workflow %s - no PENDING_APPROVAL label", email_id)
-            return {"status": "skipped", "reason": "No pending approval found."}
-
+    async def process_new_email(self, email_id: str, thread_id: str):
+        """Spustí graf pro nově příchozí e-mail."""
+        config = self._config(thread_id)
         try:
-            # --- KRITICKÝ FIX START ---
-            # Musíme explicitně zapsat rozhodnutí do stavu grafu,
-            # aby ho analyze_node mohl přečíst a vynutit exekuci toolu.
-            await run_in_threadpool(
-                self.graph.update_state,
-                self._config(email_id),
-                {"approval_decision": normalized_decision}
+            # Spuštění workflow
+            result = await run_in_threadpool(
+                self.graph.invoke,
+                {"email_id": email_id},
+                config,
             )
-            logger.info("Graph state updated with approval_decision=%s for %s", normalized_decision, email_id)
-            # --- KRITICKÝ FIX KONEC ---
 
-            # Nyní probudíme graf z interruptu
-            command = Command(resume=normalized_decision)
-            invoke_result = await self._invoke_graph(command, email_id)
-            logger.info("Resume invoke completed for workflow %s with result=%s", email_id, invoke_result)
-
-            # Kontrola výsledku
-            graph_status = invoke_result.get("status") if isinstance(invoke_result, dict) else None
-            if graph_status == "error":
-                return {
-                    "status": "error",
-                    "detail": "Workflow ended in error state after resume.",
-                    "graph_status": graph_status,
-                }
-
-            # Úklid labelu v Gmailu až po úspěšném doběhu grafu
-            await run_in_threadpool(self.email.modify_labels, email_id, None,
-                                    ["PENDING_APPROVAL", "APPROVAL_REMINDER_SENT"])
-            logger.info("Removed PENDING_APPROVAL label after resume for workflow %s", email_id)
-
-            return {"status": "success", "decision": normalized_decision}
+            # Logování úspěšného dokončení nebo čekání na schválení
+            self._log_audit(thread_id, result.get("status"), result.get("classification"))
+            return result
 
         except Exception as e:
-            logger.exception("Error during resume for %s", email_id)
-            return {"status": "error", "detail": str(e)}
+            # Graceful failure: zalogování chyby a vrácení bezpečného stavu
+            logger.error(f"Critical error processing thread {thread_id}: {str(e)}", exc_info=True)
+            return {
+                "email_id": email_id,
+                "thread_id": thread_id,
+                "status": "error",
+                "error_message": str(e),
+            }
 
-    async def _send_approval_reminder(self, workflow_id: str) -> Dict[str, Any]:
-        logger.info("Reminder requested for workflow %s", workflow_id)
+    async def process_pending_approvals(self):
+        """
+        Vyhledá v Gmailu odpovědi od manažera na žádosti o schválení
+        a probudí příslušná workflow.
+        """
+        from app.settings import settings
 
-        # ZDE JE ZMĚNA: Ptáme se grafu, ne Gmailu
-        state = await run_in_threadpool(self.graph.get_state, self._config(workflow_id))
-
-        # Pokud graf čeká před uzlem 'ask_approval', znamená to, že interrupt je aktivní
-        is_waiting = state.next and "ask_approval" in state.next
-
-        if not is_waiting:
-            logger.warning("Reminder skipped for workflow %s - graph is not in interrupt state", workflow_id)
-            return {"status": "skipped", "reason": "Workflow is not waiting for approval."}
-
-        reminder_sent = await run_in_threadpool(self.email.has_label, workflow_id, "APPROVAL_REMINDER_SENT")
-        if reminder_sent:
-            return {"status": "skipped", "reason": "Already sent."}
-
-        raw_msg = await run_in_threadpool(self.email.get_message, workflow_id)
-        headers = get_headers(raw_msg)
-        subject = headers.get("Subject", "Email")
-        body = (
-            "Reminder: the AI agent is still waiting for your decision.\n\n"
-            f"WORKFLOW ID: {workflow_id}\n"
-            "Please reply with APPROVE or REJECT."
+        replies = await run_in_threadpool(
+            self.email.list_approval_replies,
+            manager_email=settings.MANAGER_EMAIL
         )
 
-        await run_in_threadpool(
-            self.email.send_message,
-            settings.MANAGER_EMAIL,
-            f"[APPROVAL REQUIRED] [WF:{workflow_id}] Reminder: {subject}",
-            body,
-        )
-        await run_in_threadpool(self.email.modify_labels, workflow_id, ["APPROVAL_REMINDER_SENT"], None)
-        logger.info("Reminder sent for workflow %s and APPROVAL_REMINDER_SENT label set", workflow_id)
-        return {"status": "success", "workflow_id": workflow_id}
+        for reply_info in replies:
+            msg_id = reply_info["id"]
+            full_msg = await run_in_threadpool(self.email.get_message, msg_id)
 
-    async def process_pending_approvals(self, max_results: int = 20):
-        """Hledá odpovědi od manažera a posouvá čekající grafy."""
-        replies = await run_in_threadpool(self.email.list_approval_replies, settings.MANAGER_EMAIL, max_results)
-        logger.info("Approval inbox poll fetched %s replies (limit=%s)", len(replies), max_results)
+            body = full_msg.get("snippet", "").upper()
+            thread_id = full_msg.get("threadId")
 
-        for reply in replies:
-            reply_id = reply.get("id")
-            if not reply_id:
-                logger.warning("Skipping approval reply without id: %s", reply)
-                continue
-            raw = await run_in_threadpool(self.email.get_message, reply_id)
-            body = get_body(raw)
-            subject = get_headers(raw).get("Subject", "")
+            decision: Optional[Literal["APPROVE", "REJECT"]] = None
+            if "APPROVE" in body:
+                decision = "APPROVE"
+            elif "REJECT" in body:
+                decision = "REJECT"
 
-            decision, workflow_id = self._extract_decision_and_workflow_id(body, subject)
-            logger.info(
-                "Parsed manager reply id=%s -> decision=%s workflow_id=%s (strict mode: APPROVE/REJECT only)",
-                reply_id,
-                decision,
-                workflow_id,
+            if decision and thread_id:
+                logger.info(f"Rozhodnutí manažera pro thread {thread_id}: {decision}")
+
+                # Probudíme graf s daným rozhodnutím
+                await self.resume_with_decision(thread_id, decision)
+
+                # Označíme zprávu jako přečtenou (odstraníme UNREAD), aby se neprocesovala znovu
+                await run_in_threadpool(
+                    self.email.modify_labels,
+                    msg_id,
+                    remove=["UNREAD"]
+                )
+
+    async def resume_with_decision(self, email_id: str, decision: Literal["APPROVE", "REJECT"]):
+        """Probudí graf poté, co manažer odpoví APPROVE/REJECT."""
+        config = self._config(email_id)
+        try:
+            from langchain_core.messages import HumanMessage
+
+            state_snapshot = await run_in_threadpool(self.graph.get_state, config)
+            original_email_id = None
+            if state_snapshot and getattr(state_snapshot, "values", None):
+                original_email_id = state_snapshot.values.get("email_id")
+
+            await run_in_threadpool(
+                self.graph.update_state,
+                config,
+                {"messages": [HumanMessage(content=decision.upper())]}
             )
 
-            if decision and workflow_id:
-                parsed = ManagerReplyDecision(
-                    decision=cast(Literal["APPROVE", "REJECT"], decision),
-                    workflow_id=workflow_id,
-                )
-                logger.info("Resuming workflow %s from reply %s with decision=%s", parsed.workflow_id, reply_id, parsed.decision)
-                res = await self.resume_approval(parsed.workflow_id, parsed.decision)
-                logger.info("Resume result for workflow %s: %s", parsed.workflow_id, res)
-                if res.get("status") in ["success", "skipped"]:
-                    await run_in_threadpool(self.email.modify_labels, reply_id, None, ["UNREAD", "INBOX"])
-                    logger.info("Archived manager reply %s after resume result=%s", reply_id, res.get("status"))
-            elif workflow_id:
-                logger.warning(
-                    "Reply %s contains workflow_id=%s but no strict decision token on first line; sending reminder",
-                    reply_id,
-                    workflow_id,
-                )
-                await self._send_approval_reminder(workflow_id)
-                await run_in_threadpool(self.email.modify_labels, reply_id, None, ["UNREAD", "INBOX"])
-                logger.info("Archived unparseable manager reply %s after reminder flow", reply_id)
-            else:
-                # Pokud z emailu nic nevyčteme, archivujeme ho, ať tam nestraší
-                logger.warning("Reply %s has no workflow id in subject; archiving without action", reply_id)
-                await run_in_threadpool(self.email.modify_labels, reply_id, None, ["UNREAD", "INBOX"])
-                logger.info("Archived manager reply %s with no actionable workflow reference", reply_id)
+            # Pokračování v běhu grafu z bodu přerušení
+            result = await run_in_threadpool(self.graph.invoke, None, config)
 
-    @staticmethod
-    def _extract_decision_and_workflow_id(
-            text: str,
-            subject: str = ""
-    ) -> Tuple[Optional[Literal["APPROVE", "REJECT"]], Optional[str]]:
-        """Strictní extrakce rozhodnutí + workflow ID pro approval reply."""
-        decision: Optional[Literal["APPROVE", "REJECT"]] = None
-        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-        first_token = first_line.rstrip(".,!?:;").upper()
-        if first_token in {"APPROVE", "REJECT"}:
-            decision = first_token
+            if original_email_id:
+                await run_in_threadpool(
+                    self.email.modify_labels,
+                    original_email_id,
+                    remove=["PENDING_APPROVAL"],
+                )
 
-        workflow_id = None
-        if subject:
-            subject_match = re.search(r"\[WF:([a-fA-F0-9]+)]", subject, flags=re.IGNORECASE)
-            workflow_id = subject_match.group(1).strip() if subject_match else None
-        return decision, workflow_id
+            self._log_audit(email_id, result.get("status"), result.get("classification"), decision)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error during resumption of email {email_id}: {str(e)}", exc_info=True)
+            return {"email_id": email_id, "status": "error", "error_message": str(e)}
+
+    def _log_audit(self, email_id: str, status: str, classification: Any = None, decision: str = None):
+        """Vytvoří strukturovaný log o zpracování e-mailu."""
+        log_entry = {
+            "event_id": str(uuid.uuid4()),
+            "email_id": email_id,
+            "label": getattr(classification, 'label', 'UNKNOWN') if classification else "UNKNOWN",
+            "is_urgent": getattr(classification, 'is_urgent', False) if classification else False,
+            "decision": decision,
+            "outcome": status
+        }
+        logger.info(f"AUDIT_LOG: {log_entry}")

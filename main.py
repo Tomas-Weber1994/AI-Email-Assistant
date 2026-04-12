@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from app.api.endpoints import router
 from app.auth import get_authorized_http
@@ -52,7 +53,10 @@ async def lifespan(app: FastAPI):
     db_path = settings.DB_PATH.parent / "checkpoints.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
+    serde = JsonPlusSerializer(
+        allowed_msgpack_modules=[("app.workflows.state", "EmailClassification")]
+    )
+    checkpointer = SqliteSaver(conn, serde=serde)
 
     # Inicializace služeb
     auth = get_authorized_http()
