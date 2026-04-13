@@ -116,7 +116,10 @@ def archive_and_label(
 
 @tool
 def notify_manager(proposed_action: str):
-    """Sends an immediate notification to the manager about an important task."""
+    """
+    Records a manager-notification intent as part of the approval-gated workflow.
+    Actual execution is controlled by the approval/resume flow.
+    """
     return f"SUCCESS: Manager notified about: {proposed_action}"
 
 
