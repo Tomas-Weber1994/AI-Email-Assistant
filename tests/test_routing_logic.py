@@ -9,7 +9,7 @@ from app.workflows.policies import ApprovalPolicy
 from app.workflows.state import EmailClassification, EmailAgentState
 
 
-class StubPolicy(ApprovalPolicy):
+class DeterministicApprovalPolicy(ApprovalPolicy):
     def __init__(self, value: bool):
         self.value = value
         self.called = False
@@ -36,7 +36,8 @@ def _base_state() -> EmailAgentState:
 
 def test_routing_goes_cleanup_when_no_tool_calls():
     state = _base_state()
-    policy = StubPolicy(value=True)
+    state["messages"] = [AIMessage(content="done", tool_calls=[])]
+    policy = DeterministicApprovalPolicy(value=True)
 
     decision = routing_logic(state, policy)
 
@@ -44,23 +45,23 @@ def test_routing_goes_cleanup_when_no_tool_calls():
     assert policy.called is False
 
 
-def test_routing_bypasses_policy_when_manager_approved():
+def test_routing_routes_to_ask_approval_and_calls_policy_when_manager_approved():
     state = _base_state()
     state["manager_decision"] = ApprovalDecision.APPROVE
     approved_calls = [{"name": "send_reply", "args": {"text": "ok"}, "id": "t1", "type": "tool_call"}]
     state["pending_approval_tool_calls"] = approved_calls
     state["messages"] = [
         AIMessage(
-            content="run",
+            content="Executing approved actions.",
             tool_calls=approved_calls,
         )
     ]
-    policy = StubPolicy(value=True)
+    policy = DeterministicApprovalPolicy(value=True)
 
     decision = routing_logic(state, policy)
 
-    assert decision == "tools"
-    assert policy.called is False
+    assert decision == "ask_approval"
+    assert policy.called is True
 
 
 def test_routing_rechecks_policy_when_manager_approved_but_calls_changed():
@@ -75,7 +76,7 @@ def test_routing_rechecks_policy_when_manager_approved_but_calls_changed():
             tool_calls=[{"name": "send_reply", "args": {"text": "new"}, "id": "t-new", "type": "tool_call"}],
         )
     ]
-    policy = StubPolicy(value=True)
+    policy = DeterministicApprovalPolicy(value=True)
 
     decision = routing_logic(state, policy)
 
@@ -91,7 +92,7 @@ def test_routing_sends_to_ask_approval_when_policy_blocks():
             tool_calls=[{"name": "send_reply", "args": {"text": "ok"}, "id": "t2", "type": "tool_call"}],
         )
     ]
-    policy = StubPolicy(value=True)
+    policy = DeterministicApprovalPolicy(value=True)
 
     decision = routing_logic(state, policy)
 

@@ -10,7 +10,7 @@ token.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
-data/*.db
+data/
 
 # Virtual environments
 env/
