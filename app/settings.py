@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # Google
     MANAGER_EMAIL: str = ""  # email address to send approval requests to
-    SALES_REPLY_REQUIRES_APPROVAL: bool = False
+    SALES_REPLY_REQUIRES_APPROVAL: bool = True
 
     # OpenAI
     OPENAI_API_KEY: str = ""

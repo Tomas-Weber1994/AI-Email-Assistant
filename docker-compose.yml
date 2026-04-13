@@ -11,7 +11,7 @@ services:
       - ./data:/app/data
       # Credentials & .env handed over separately
       - ./credentials:/app/credentials
-      - ./.env:/app/.env:ro
+      - ./.env:/app/.env
 
     environment:
       LOG_LEVEL: DEBUG
@@ -19,5 +19,3 @@ services:
 
     tty: true
     restart: unless-stopped
-
-

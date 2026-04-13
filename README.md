@@ -5,7 +5,7 @@ AI agent monitoring Gmail inbox, classifying emails via GPT, and executing actio
 ## Architecture
 
 ```
-FastAPI + poll loop → WorkflowManager → LangGraph graph → Gmail / Calendar APIs
+FastAPI + poll loop → WorkflowManager → LangGraph → Gmail / Calendar APIs
 ```
 
 **Workflow:** `ingest → classify → analyze → tools → (ask_approval?) → cleanup`
@@ -53,15 +53,15 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in values
 ```
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `OPENAI_API_KEY` | Yes | — | OpenAI key |
-| `MANAGER_EMAIL` | Yes | — | Approval request recipient |
-| `MODEL_NAME` | No | `gpt-4o` | LLM model |
-| `POLL_INTERVAL_SECONDS` | No | `30` | Inbox poll interval |
-| `MAX_ANALYZE_PASSES` | No | `6` | Max LLM cycles per email |
-| `SALES_REPLY_REQUIRES_APPROVAL` | No | `false` | Gate sales auto-replies |
-| `APP_HOST` / `APP_PORT` | No | `0.0.0.0` / `9000` | Server bind |
+| Variable | Required | Default                 | Description |
+|----------|----------|-------------------------|-------------|
+| `OPENAI_API_KEY` | Yes | —                       | OpenAI key |
+| `MANAGER_EMAIL` | Yes | —                       | Approval request recipient |
+| `MODEL_NAME` | No | `gpt-4o`                | LLM model |
+| `POLL_INTERVAL_SECONDS` | No | `30`                    | Inbox poll interval |
+| `MAX_ANALYZE_PASSES` | No | `6`                     | Max LLM cycles per email |
+| `SALES_REPLY_REQUIRES_APPROVAL` | No | `true`                     | Gate sales auto-replies |
+| `APP_HOST` / `APP_PORT` | No | `0.0.0.0` / `9000`      | Server bind |
 | `CHECKPOINT_DB_PATH` | No | `./data/checkpoints.db` | LangGraph state DB |
 
 ### Run
@@ -110,13 +110,4 @@ app/
 │   ├── state.py              # EmailAgentState TypedDict + reducers
 │   └── utils.py              # Message sanitization, runtime config
 └── utils/                    # Email parsing, logging, time helpers
-scripts/
-└── live_seed_emails.py       # Send test emails to monitored inbox
-```
-
-## Seed test emails
-
-```powershell
-python scripts/live_seed_emails.py --to your-inbox@gmail.com
-python scripts/live_seed_emails.py --dry-run   # no API calls
 ```
