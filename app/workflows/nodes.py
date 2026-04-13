@@ -124,7 +124,6 @@ def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
         logger.info("Email %s: Requesting manager approval for tools: %s", state.get("email_id"), tool_names)
         email_service.send_approval_request(state["raw_content"], action_summary, runtime.get("thread_id"))
 
-        time.sleep(0.8)
         email_service.modify_labels(
             state["email_id"],
             add=[GmailSystemLabel.PENDING_APPROVAL.value],
