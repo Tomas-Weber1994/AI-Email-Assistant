@@ -1,147 +1,141 @@
 # AI Email & Calendar Assistant
 
-An AI agent that **automatically monitors** a Gmail inbox, classifies incoming emails using GPT-4o,
-and takes autonomous actions — including calendar coordination and human-in-the-loop approval.
+AI agent monitoring Gmail inbox, classifying emails via GPT, and executing actions autonomously — with human-in-the-loop approval for sensitive operations.
 
-The agent runs a **background polling loop** (default: every 60s) that processes new emails
-and checks for manager approval replies. No manual API calls required — just start the server.
+## Docker Compose quick start
+
+This project is expected to run from the prebuilt Docker Hub image: `tweber94/ai-email-assistant:latest`.
+
+1. Create `.env` from `.env.example` and fill required values (`OPENAI_API_KEY`, `MANAGER_EMAIL`).
+2. Put Google OAuth files into `credentials/`:
+   - required: `credentials/credentials.json`
+   - required for runtime: `credentials/token.json` (generate once via OAuth flow before starting Docker)
+3. Start with Docker Compose (it pulls/runs the Docker Hub image).
+
+```powershell
+copy .env.example .env
+docker compose pull
+docker compose up -d
+docker compose logs -f ai-email-assistant
+```
+
+Notes:
+- `data/checkpoints.db` is persisted via `./data:/app/data`.
+- If `data/checkpoints.db` does not exist, it is created automatically on startup.
+- Stop the app with `docker compose down`.
 
 ## Architecture
 
 ```
-FastAPI API  →  AgentRunner  →  LangGraph Workflow  →  Gmail / Calendar APIs
-                                    │
-                    ┌───────────────┼───────────────────┐
-                    ▼               ▼                   ▼
-                Ingest  →  Classify (LLM)  →  Action dispatch
-                                │                │    │    │
-                            Approval?       Archive  Spam  Flag+Notify
-                                │                         │
-                          Manager email            Calendar → Reply
+FastAPI + poll loop → WorkflowManager → LangGraph → Gmail / Calendar APIs
 ```
 
-### Workflow nodes
+**Workflow:** `ingest → classify → analyze → tools → (ask_approval?) → cleanup`
 
-| Node       | Responsibility                                      |
-|------------|-----------------------------------------------------|
-| `ingest`   | Fetch raw email from Gmail API                      |
-| `classify` | LLM classification → label + action + urgency       |
-| `approval` | Send approval request email to manager               |
-| `action`   | Dispatch: archive / spam / flag+notify based on action |
-| `calendar` | Check availability + create Google Calendar event    |
-| `reply`    | Send auto-reply within the original thread           |
+| Node | Responsibility |
+|------|---------------|
+| `ingest` | Fetch raw email from Gmail |
+| `classify` | LLM structured output → `EmailLabel` + urgency flag |
+| `analyze` | LLM tool-call planning (MAX_ANALYZE_PASSES guard) |
+| `tools` | Execute tool calls |
+| `ask_approval` | Email manager, interrupt & checkpoint workflow |
+| `cleanup` | Write JSON audit record |
 
-### Email classification matrix
-
-| Label            | Action         | Approval     | Details                              |
-|------------------|----------------|--------------|--------------------------------------|
-| MARKETING        | archive        | No — auto    | Optional acknowledgement reply       |
-| MEETING_REQUEST  | create_event   | Yes — email  | Parse times, check calendar conflicts|
-| SALES_OUTREACH   | send_reply     | No — auto    | Polite decline + archive             |
-| TASK             | flag_notify    | If urgent    | STARRED + manager notification       |
-| INFO_ONLY        | archive        | No — auto    | Auto-labeled with Finance label      |
-| SPAM             | log_spam       | No — auto    | Moved to Gmail system Spam folder    |
-
-**URGENT** modifier can be added to any label except SPAM.
+| Label | Auto action | Approval |
+|-------|------------|---------|
+| `MEETING_REQUEST` | Check availability → create event | Yes |
+| `TASK` | Notify manager → archive | Yes (if urgent) |
+| `INFO_ONLY` | Archive (Finance label for invoices) | No |
+| `SALES_OUTREACH` | Polite decline + archive | Configurable |
+| `MARKETING` | Archive | No |
+| `SPAM` | Move to Spam | No |
 
 ## Setup
 
-### Prerequisites
-- Python 3.10+
-- Gmail account with API access enabled
-- Google Calendar API enabled
-- OpenAI API key
+Use this section only for local source development (not required for Docker Hub run).
 
-### 1. Clone and install
-```bash
-git clone <repo-url>
-cd AiEmailAgent
+### Prerequisites for local run without Docker
+- Python 3.13+, Gmail + Calendar APIs enabled, OpenAI API key
+
+### Install
+```powershell
+git clone https://github.com/Tomas-Weber1994/AI-Email-Assistant.git
+cd AI-Email-Assistant
 python -m venv env
-source env/bin/activate  # or env\Scripts\activate on Windows
+env\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Google credentials
-1. Create a Google Cloud project and enable Gmail + Calendar APIs.
+### Google credentials
+1. Create a GCP project, enable Gmail + Calendar APIs.
 2. Create OAuth 2.0 credentials (Desktop app).
-3. Download `credentials.json` to `credentials/`.
-4. Run the auth flow once locally to generate `credentials/token.json`.
+3. Place `credentials.json` in `credentials/`.
+4. Run OAuth flow once → generates `credentials/token.json`.
 
-### 3. Environment variables
-```bash
-cp .env.example .env
-# Edit .env with your values
+### Environment
+```powershell
+cp .env.example .env   # fill in values
 ```
 
-| Variable         | Required | Description                            |
-|------------------|----------|----------------------------------------|
-| `OPENAI_API_KEY` | Yes      | OpenAI API key                         |
-| `GMAIL_USER`     | Yes      | Gmail address being monitored          |
-| `MANAGER_EMAIL`  | Yes      | Email for approval requests            |
-| `MODEL_NAME`     | No       | LLM model (default: `gpt-4o`)         |
-| `APP_HOST`       | No       | Server host (default: `0.0.0.0`)      |
-| `APP_PORT`       | No       | Server port (default: `9000`)          |
-| `POLL_INTERVAL_SECONDS` | No | Inbox poll interval (default: `60`)    |
-| `PROXY_HOST`     | No       | HTTP proxy host                        |
-| `PROXY_PORT`     | No       | HTTP proxy port                        |
-| `DB_PATH`        | No       | SQLite DB path (default: `data/agent.db`) |
+| Variable | Required | Default                 | Description |
+|----------|----------|-------------------------|-------------|
+| `OPENAI_API_KEY` | Yes | —                       | OpenAI key |
+| `MANAGER_EMAIL` | Yes | —                       | Approval request recipient |
+| `MODEL_NAME` | No | `gpt-4o`                | LLM model |
+| `POLL_INTERVAL_SECONDS` | No | `30`                    | Inbox poll interval |
+| `MAX_ANALYZE_PASSES` | No | `6`                     | Max LLM cycles per email |
+| `SALES_REPLY_REQUIRES_APPROVAL` | No | `true`                     | Gate sales auto-replies |
+| `APP_HOST` / `APP_PORT` | No | `0.0.0.0` / `9000`      | Server bind |
+| `CHECKPOINT_DB_PATH` | No | `./data/checkpoints.db` | LangGraph state DB |
 
-### 4. Run
-```bash
+### Run
+```powershell
 python main.py
 ```
 
-## API Endpoints
+## API
 
-| Method | Path                       | Description                          |
-|--------|----------------------------|--------------------------------------|
-| GET    | `/api/v1/test-connection`  | Test Gmail + Calendar connectivity   |
-| POST   | `/api/v1/process-emails`   | Process unread emails + approved retries |
-| POST   | `/api/v1/check-approvals`  | Check manager replies on pending approvals |
+| Method | Path | Description                          |
+|--------|------|--------------------------------------|
+| GET | `/api/v1/health` | Health check                         |
+| GET | `/api/v1/test-connection` | Verify Gmail + Calendar connectivity |
+| POST | `/api/v1/process-emails` | Manually trigger inbox processing    |
+| POST | `/api/v1/approve` | Approve / reject workflow via API    |
 
-### How it works
-1. On startup, the agent begins polling Gmail every `POLL_INTERVAL_SECONDS` (default: 60s).
-2. New unread emails are fetched, classified by LLM, and actions are executed automatically.
-3. Emails requiring approval (calendar events, urgent tasks) trigger an email to `MANAGER_EMAIL`.
-4. Manager replies APPROVE or REJECT — the next poll cycle picks up the decision.
-5. Approved actions (calendar events, replies) are executed on the following poll cycle.
+Primary flow is fully automated. `/process-emails` and `/approve` are manual fallbacks — approval normally happens via email reply (`APPROVE` / `REJECT`).
 
-API endpoints are also available for manual triggers and debugging.
+## How approval works
 
-## Project Structure
+1. Poll loop fetches unread emails every `POLL_INTERVAL_SECONDS`.
+2. Each email runs `ingest → classify → analyze → tools`.
+3. Sensitive tools (`send_reply`, `create_calendar_event`, `notify_manager`) trigger `ask_approval` — graph interrupts, manager gets an email.
+4. Manager replies `APPROVE` or `REJECT`; next poll detects the reply and resumes the checkpointed workflow.
+5. Approved actions execute from exact checkpoint; rejected emails are archived.
+
+## Project structure
 
 ```
+main.py                         # App entrypoint + poll loop lifecycle
+credentials/                    # OAuth files (credentials.json, token.json) - (volume-mounted)
+data/                           # Persistent workflow state (checkpoints.db) - (volume-mounted)
+tests/                          # Automated tests (need to be extended)
 app/
-├── agent/          # LangGraph workflow
-│   ├── actions.py  # Atomic Gmail/Calendar actions
-│   ├── graph.py    # Graph construction + routing
-│   ├── nodes.py    # Workflow node functions
-│   ├── prompts.py  # LLM prompt templates
-│   └── state.py    # AgentState TypedDict
-├── api/
-│   └── endpoints.py
+├── api/endpoints.py          # FastAPI router
 ├── schemas/
-│   └── classification.py  # Pydantic models (EmailRecord, EmailClassification)
+│   ├── api.py                # ApprovalDecision, WorkflowStatus
+│   └── classification.py     # EmailLabel, GmailSystemLabel enums
 ├── services/
-│   ├── agent_runner.py    # Orchestrator (idempotency, retry logic)
-│   ├── approval.py        # Approval polling service
-│   ├── base.py            # Google API base class
-│   └── google.py          # Gmail + Calendar service classes
-├── utils/
-│   ├── email_utils.py     # Email parsing helpers
-│   ├── logging_config.py  # Logging setup
-│   └── time_utils.py      # Time helpers
-├── auth.py         # Google OAuth2
-├── database.py     # SQLite persistence
-├── dependencies.py # FastAPI DI factories
-└── settings.py     # Pydantic Settings
+│   ├── ports.py              # EmailProvider / CalendarProvider protocols
+│   ├── gmail_service.py      # Gmail implementation
+│   ├── calendar_service.py   # Calendar implementation
+│   └── workflow_manager.py   # Polling, approval resume, orchestration
+├── workflows/
+│   ├── graph.py              # LangGraph factory + routing_logic
+│   ├── nodes.py              # Workflow nodes
+│   ├── tools.py              # LangChain tools
+│   ├── policies.py           # ApprovalPolicy (pluggable)
+│   ├── prompts.py            # LLM system prompt
+│   ├── state.py              # EmailAgentState TypedDict + reducers
+│   └── utils.py              # Message sanitization, runtime config
+└── utils/                    # Email parsing, logging, time helpers
 ```
-
-## Non-Functional Requirements
-
-- **Audit trail**: Every processed email produces structured log entries stored in DB (`audit_trail` field on `EmailRecord`).
-- **Error handling**: `safe_execute` wrapper catches exceptions per node, logs them, persists state, and short-circuits the remaining workflow.
-- **Idempotency**: Emails already processed (with classification) are skipped. Incomplete records (failed mid-workflow) are automatically retried.
-- **Human-in-the-loop**: Calendar events and manager-facing replies require email confirmation (APPROVE/REJECT) before execution.
-
-

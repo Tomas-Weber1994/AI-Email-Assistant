@@ -13,7 +13,8 @@ def configure_logging() -> None:
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(logging.Formatter(log_format))
 
-    app_logger = logging.getLogger("app")
-    app_logger.setLevel(level)
-    app_logger.handlers = [stream_handler]
-    app_logger.propagate = False
+    for logger_name in ("app", "audit_trail"):
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(level)
+        logger.handlers = [stream_handler]
+        logger.propagate = False

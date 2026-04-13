@@ -1,9 +1,10 @@
 """FastAPI dependency factories — wires together auth + services."""
+from fastapi import Request
 
 from app.auth import get_authorized_http
-from app.services.agent_runner import AgentRunner
-from app.services.approval import ApprovalService
-from app.services.google import GmailService, CalendarService
+from app.services.calendar_service import CalendarService
+from app.services.gmail_service import GmailService
+from app.services.workflow_manager import WorkflowManager
 
 
 def get_gmail() -> GmailService:
@@ -14,12 +15,10 @@ def get_calendar() -> CalendarService:
     return CalendarService(get_authorized_http())
 
 
-def get_agent_runner() -> AgentRunner:
-    auth = get_authorized_http()
-    return AgentRunner(GmailService(auth), CalendarService(auth))
-
-
-def get_approval_service() -> ApprovalService:
-    return ApprovalService(GmailService(get_authorized_http()))
+def get_workflow_manager(request: Request) -> WorkflowManager:
+    manager = getattr(request.app.state, "workflow_manager", None)
+    if manager is None:
+        raise RuntimeError("WorkflowManager is not initialized.")
+    return manager
 
 

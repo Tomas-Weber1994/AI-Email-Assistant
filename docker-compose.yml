@@ -1,0 +1,15 @@
+services:
+  ai-email-assistant:
+    image: tweber94/ai-email-assistant:latest
+    container_name: ai-email-assistant
+    ports:
+      - "9000:9000"
+
+    volumes:
+      - ./data:/app/data
+      - ./credentials:/app/credentials
+    env_file:
+      - .env
+
+    tty: true
+    restart: unless-stopped
