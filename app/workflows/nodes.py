@@ -72,6 +72,7 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
 
     # If APPROVE then replay the approved tool calls exactly, bypassing LLM
     if state.get("manager_decision") == ApprovalDecision.APPROVE:
+        logger.info("Email %s: Manager approved tool execution.", state.get("email_id"))
         return {
             "messages": [AIMessage(content="Executing approved actions.",
                                    tool_calls=state["pending_approval_tool_calls"])],

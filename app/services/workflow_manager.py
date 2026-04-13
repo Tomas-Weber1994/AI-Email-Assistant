@@ -55,6 +55,7 @@ class WorkflowManager:
                 logger.info("Skipping email %s: already pending manager approval.", email_id)
                 continue
 
+            logger.info("-" * 80)
             logger.info("Starting workflow for email %s", email_id)
             results.append(await self._process_new_email(email_id, thread_id))
 
