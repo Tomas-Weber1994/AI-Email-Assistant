@@ -115,6 +115,10 @@ Primary flow is fully automated. `/process-emails` and `/approve` are manual fal
 ## Project structure
 
 ```
+main.py                         # App entrypoint + poll loop lifecycle
+credentials/                    # OAuth files (credentials.json, token.json) - (volume-mounted)
+data/                           # Persistent workflow state (checkpoints.db) - (volume-mounted)
+tests/                          # Automated tests (need to be extended)
 app/
 ├── api/endpoints.py          # FastAPI router
 ├── schemas/
