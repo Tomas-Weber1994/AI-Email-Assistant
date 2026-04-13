@@ -2,6 +2,26 @@
 
 AI agent monitoring Gmail inbox, classifying emails via GPT, and executing actions autonomously — with human-in-the-loop approval for sensitive operations.
 
+## Docker Compose quick start
+
+1. Create `.env` from `.env.example` and fill required values (`OPENAI_API_KEY`, `MANAGER_EMAIL`).
+2. Put Google OAuth files into `credentials/`:
+   - required: `credentials/credentials.json`
+   - optional on first run: `credentials/token.json` (created after OAuth flow)
+3. Start with Docker Compose.
+
+```powershell
+copy .env.example .env
+docker compose pull
+docker compose up -d
+docker compose logs -f ai-email-assistant
+```
+
+Notes:
+- `data/checkpoints.db` is persisted via `./data:/app/data`.
+- If `data/checkpoints.db` does not exist, it is created automatically on startup.
+- Stop the app with `docker compose down`.
+
 ## Architecture
 
 ```
