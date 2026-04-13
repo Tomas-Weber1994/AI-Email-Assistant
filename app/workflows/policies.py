@@ -17,6 +17,7 @@ from app.workflows.tools import ToolName
 
 logger = logging.getLogger(__name__)
 
+# Default template used only if the LLM fails to provide its own decline text.
 _SALES_OUTREACH_DECLINE = (
     "Hello,\n\n"
     "Thank you for your message. We are not interested at this time.\n\n"
@@ -54,9 +55,12 @@ class StandardApprovalPolicy(ApprovalPolicy):
             sensitive.discard(ToolName.SEND_REPLY.value)
 
         needs = any(tc["name"] in sensitive for tc in tool_calls)
+
+        # FIXED: Added missing %s for sensitive_pool and provided the argument
         logger.debug(
-            "Policy check — tools: %s, requires_approval: %s",
+            "Policy check — tools: %s, sensitive_pool: %s, requires_approval: %s",
             [tc["name"] for tc in tool_calls],
+            list(sensitive),
             needs,
         )
         return needs
@@ -65,8 +69,7 @@ class StandardApprovalPolicy(ApprovalPolicy):
 def apply_sales_outreach_guard(response: AIMessage, state: EmailAgentState) -> AIMessage:
     """
     Ensures SALES_OUTREACH emails always include send_reply + archive_and_label.
-    Called after the LLM response in analyze_node as a deterministic safety net.
-    Returns the original response unchanged for all other classifications.
+    If the LLM already proposed a reply, we keep it to avoid duplicate/conflicting requests.
     """
     classification = state.get("classification")
     if not classification or classification.label != EmailLabel.SALES_OUTREACH:
@@ -75,6 +78,8 @@ def apply_sales_outreach_guard(response: AIMessage, state: EmailAgentState) -> A
     current_calls = list(getattr(response, "tool_calls", []) or [])
     current_names = [tc.get("name") for tc in current_calls]
 
+    # If the LLM already suggested a reply, we don't overwrite it with the template.
+    # This prevents double approval requests with different texts.
     if ToolName.SEND_REPLY.value not in current_names:
         current_calls.insert(0, {
             "name": ToolName.SEND_REPLY.value,
@@ -82,21 +87,23 @@ def apply_sales_outreach_guard(response: AIMessage, state: EmailAgentState) -> A
             "id": f"sales_reply_{uuid.uuid4().hex[:8]}",
             "type": "tool_call",
         })
+        logger.debug("Sales outreach guard: Injected default decline template.")
 
+    # Always ensure archive_and_label is present for terminal consistency.
     if ToolName.ARCHIVE_AND_LABEL.value not in current_names:
         current_calls.append({
             "name": ToolName.ARCHIVE_AND_LABEL.value,
             "args": {
                 "primary_label": EmailLabel.SALES_OUTREACH.value,
-                "is_urgent": bool(classification.is_urgent),
+                "is_urgent": False, # Enforce False for SPAM/SALES consistency if required
             },
             "id": f"sales_archive_{uuid.uuid4().hex[:8]}",
             "type": "tool_call",
         })
+        logger.debug("Sales outreach guard: Injected terminal archive call.")
 
+    # If length is the same, no changes were made.
     if len(current_calls) == len(getattr(response, "tool_calls", []) or []):
-        return response  # No injection was needed.
+        return response
 
-    logger.debug("Sales outreach guard injected missing tool calls.")
-    return AIMessage(content="Applying SALES_OUTREACH guard.", tool_calls=current_calls)
-
+    return AIMessage(content=response.content, tool_calls=current_calls)

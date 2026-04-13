@@ -11,7 +11,7 @@ from app.workflows.state import EmailAgentState, EmailClassification
 from app.workflows.tools import get_all_tools, ToolName
 from app.workflows.prompts import get_agent_system_prompt
 from app.workflows.policies import apply_sales_outreach_guard
-from app.schemas.classification import GmailSystemLabel
+from app.schemas.classification import GmailSystemLabel, EmailLabel
 from app.workflows.utils import (
     get_runtime_config, extract_email_parts,
     sanitize_messages_for_openai
@@ -54,6 +54,8 @@ def classify_node(state: EmailAgentState, config: RunnableConfig):
     classification = llm.invoke([
         HumanMessage(content=f"From: {sender}\nSubject: {subject}\nBody: {body}")
     ])
+    if classification.label == EmailLabel.SPAM:
+        classification.is_urgent = False
 
     label_str = f"{classification.label}" + (" + URGENT" if classification.is_urgent else "")
     logger.info("Classified email %s as %s", state["email_id"], label_str)

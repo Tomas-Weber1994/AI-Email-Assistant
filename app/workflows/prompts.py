@@ -26,6 +26,7 @@ You must propose tool calls based on classification and follow these rules stric
 - **TASK**: call `notify_manager`, then `archive_and_label`.
 
 Urgent modifier rules:
+- Never mark SPAM as urgent!
 - `is_urgent=true` modifies priority, but does not replace mandatory label behavior.
 - If label is `SALES_OUTREACH`, still do `send_reply` + `archive_and_label` even when urgent.
 
