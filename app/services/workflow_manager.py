@@ -5,6 +5,7 @@ from typing import Optional, Any, Dict, List
 from starlette.concurrency import run_in_threadpool
 from langchain_core.messages import HumanMessage
 
+from app.services.ports import EmailProvider, CalendarProvider
 from app.schemas.api import ApprovalDecision, WorkflowStatus
 from app.schemas.classification import GmailReservedLabel, GmailSystemLabel
 from app.settings import settings
@@ -17,9 +18,9 @@ _WF_TAG_RE = re.compile(r"\[WF:([^]]+)\]")
 
 
 class WorkflowManager:
-    def __init__(self, email, calendar, llm, checkpointer):
-        self.email = email
-        self.calendar = calendar
+    def __init__(self, email: EmailProvider, calendar: CalendarProvider, llm, checkpointer):
+        self.email: EmailProvider = email
+        self.calendar: CalendarProvider = calendar
         self.llm = llm
         self.graph = create_email_graph(checkpointer)
 

@@ -51,5 +51,15 @@ class Settings(BaseSettings):
             raise ValueError("MANAGER_EMAIL is required for approval workflows.")
         return manager_email
 
+    @field_validator("OPENAI_API_KEY", mode="before")
+    @classmethod
+    def validate_openai_api_key(cls, value):
+        api_key = str(value or "").strip()
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY is required. Set it in your .env file or as an environment variable."
+            )
+        return api_key
+
 
 settings = Settings()

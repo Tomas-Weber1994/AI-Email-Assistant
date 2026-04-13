@@ -68,11 +68,6 @@ class GmailService(GoogleService):
         request = self.service.users().messages().get(userId=self.USER_ID, id=msg_id)
         return self._call_google_api(request)
 
-    def get_thread_subject(self, thread_id: str) -> str:
-        thread = self._call_google_api(self.service.users().threads().get(userId=self.USER_ID, id=thread_id))
-        if not thread.get("messages"):
-            return "No Subject"
-        return get_headers(thread["messages"][0]).get("Subject", "No Subject")
 
     def has_label(self, msg_id: str, label_name: str) -> bool:
         request = self.service.users().messages().get(userId=self.USER_ID, id=msg_id, format='minimal')
@@ -154,6 +149,14 @@ class GmailService(GoogleService):
             message["To"] = settings.MANAGER_EMAIL
             message["Subject"] = f"{self.APPROVAL_SUBJECT_TAG} [WF:{workflow_ref}] {source_subject}"
             return self._send_raw(message)
+
+    def send_message(self, to: str, subject: str, body: str) -> dict[str, Any]:
+        """Sends a standalone email to any recipient."""
+        message = EmailMessage()
+        message["To"] = str(to or "").strip()
+        message["Subject"] = str(subject or "").strip()
+        message.set_content(str(body or "").strip())
+        return self._send_raw(message)
 
     def _send_raw(self, message: EmailMessage, thread_id: str | None = None) -> dict[str, Any]:
         body = {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}

@@ -12,6 +12,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+@router.get("/health", tags=["ops"])
+async def health():
+    """Basic health check"""
+    return {"status": "ok"}
+
+
 @router.get("/test-connection")
 async def test_connection(
         gmail: GmailService = Depends(get_gmail),

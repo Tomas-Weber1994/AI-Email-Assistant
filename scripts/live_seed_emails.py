@@ -47,6 +47,7 @@ TEST_EMAILS: list[SeedEmail] = [
 ]
 
 
+
 def send_tests(target_email: str, dry_run: bool = False) -> None:
 	print(f"Starting to send {len(TEST_EMAILS)} test emails to {target_email}...")
 
@@ -86,8 +87,5 @@ def main() -> None:
 	target = str(args.to or "").strip() or settings.MANAGER_EMAIL
 	send_tests(target_email=target, dry_run=bool(args.dry_run))
 
-
 if __name__ == "__main__":
 	main()
-
-

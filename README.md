@@ -1,150 +1,122 @@
 # AI Email & Calendar Assistant
 
-An AI agent that monitors a Gmail inbox, classifies incoming emails using GPT, and executes actions
-through a LangGraph state machine with persistent checkpoints and human approval interrupts.
+AI agent monitoring Gmail inbox, classifying emails via GPT, and executing actions autonomously — with human-in-the-loop approval for sensitive operations.
 
 ## Architecture
 
 ```
-FastAPI API  →  WorkflowManager  →  LangGraph Workflow  →  Provider Ports  →  Google Services
-                                    │
-                    ┌───────────────┼────────────────────────────┐
-                    ▼               ▼                            ▼
-                Ingest  →  Classify (structured output)  →  Action dispatch
-                                │
-                       interrupt() on approval
-                                │
-                          invoke(Command(resume=...))
+FastAPI + poll loop → WorkflowManager → LangGraph graph → Gmail / Calendar APIs
 ```
 
-### Workflow nodes
+**Workflow:** `ingest → classify → analyze → tools → (ask_approval?) → cleanup`
 
-| Node       | Responsibility                                      |
-|------------|-----------------------------------------------------|
-| `ingest`   | Fetch raw email from Gmail API                      |
-| `classify` | LLM classification → label + action + urgency       |
-| `approval` | Send approval request email to manager               |
-| `wait_approval` | Interrupt workflow and wait for APPROVE/REJECT |
-| `action`   | Dispatch: archive / spam / flag+notify based on action |
-| `calendar` | Check availability + create Google Calendar event    |
-| `reply`    | Send auto-reply within the original thread           |
+| Node | Responsibility |
+|------|---------------|
+| `ingest` | Fetch raw email from Gmail |
+| `classify` | LLM structured output → `EmailLabel` + urgency flag |
+| `analyze` | LLM tool-call planning (MAX_ANALYZE_PASSES guard) |
+| `tools` | Execute tool calls |
+| `ask_approval` | Email manager, interrupt & checkpoint workflow |
+| `cleanup` | Write JSON audit record |
 
-### Email classification matrix
-
-| Label            | Action         | Approval     | Details                              |
-|------------------|----------------|--------------|--------------------------------------|
-| MARKETING        | archive        | No — auto    | Optional acknowledgement reply       |
-| MEETING_REQUEST  | create_event   | Yes — email  | Parse times, check calendar conflicts|
-| SALES_OUTREACH   | send_reply     | No — auto    | Polite decline + archive             |
-| TASK             | flag_notify    | If urgent    | STARRED + manager notification       |
-| INFO_ONLY        | archive        | No — auto    | Auto-labeled with Finance label      |
-| SPAM             | log_spam       | No — auto    | Moved to Gmail system Spam folder    |
-
-**URGENT** modifier can be added to any label except SPAM.
+| Label | Auto action | Approval |
+|-------|------------|---------|
+| `MEETING_REQUEST` | Check availability → create event | Yes |
+| `TASK` | Notify manager → archive | Yes (if urgent) |
+| `INFO_ONLY` | Archive (Finance label for invoices) | No |
+| `SALES_OUTREACH` | Polite decline + archive | Configurable |
+| `MARKETING` | Archive | No |
+| `SPAM` | Move to Spam | No |
 
 ## Setup
 
 ### Prerequisites
-- Python 3.10+
-- Gmail account with API access enabled
-- Google Calendar API enabled
-- OpenAI API key
+- Python 3.10+, Gmail + Calendar APIs enabled, OpenAI API key
 
-### 1. Clone and install
+### Install
 ```powershell
 git clone <repo-url>
-cd AiEmailAgent
+cd AI-Email-Assistant
 python -m venv env
 env\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Google credentials
-1. Create a Google Cloud project and enable Gmail + Calendar APIs.
+### Google credentials
+1. Create a GCP project, enable Gmail + Calendar APIs.
 2. Create OAuth 2.0 credentials (Desktop app).
-3. Download `credentials.json` to `credentials/`.
-4. Run the auth flow once locally to generate `credentials/token.json`.
+3. Place `credentials.json` in `credentials/`.
+4. Run OAuth flow once → generates `credentials/token.json`.
 
-### 3. Environment variables
+### Environment
 ```powershell
-cp .env.example .env
-# Edit .env with your values
+cp .env.example .env   # fill in values
 ```
 
-| Variable         | Required | Description                            |
-|------------------|----------|----------------------------------------|
-| `OPENAI_API_KEY` | Yes      | OpenAI API key                         |
-| `MANAGER_EMAIL`  | Yes      | Email for approval requests            |
-| `MODEL_NAME`     | No       | LLM model (default: `gpt-4o`)         |
-| `APP_HOST`       | No       | Server host (default: `0.0.0.0`)      |
-| `APP_PORT`       | No       | Server port (default: `9000`)          |
-| `POLL_INTERVAL_SECONDS` | No | Inbox poll interval (default: `30`)    |
-| `CREDENTIALS_DIR` | No      | OAuth directory (default: `./credentials`) |
-| `TOKEN_PATH`     | No       | OAuth token file (default: `./credentials/token.json`) |
-| `CHECKPOINT_DB_PATH` | No   | LangGraph checkpoint DB (default: `./data/checkpoints.db`) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OPENAI_API_KEY` | Yes | — | OpenAI key |
+| `MANAGER_EMAIL` | Yes | — | Approval request recipient |
+| `MODEL_NAME` | No | `gpt-4o` | LLM model |
+| `POLL_INTERVAL_SECONDS` | No | `30` | Inbox poll interval |
+| `MAX_ANALYZE_PASSES` | No | `6` | Max LLM cycles per email |
+| `SALES_REPLY_REQUIRES_APPROVAL` | No | `false` | Gate sales auto-replies |
+| `APP_HOST` / `APP_PORT` | No | `0.0.0.0` / `9000` | Server bind |
+| `CHECKPOINT_DB_PATH` | No | `./data/checkpoints.db` | LangGraph state DB |
 
-### 4. Run
+### Run
 ```powershell
 python main.py
 ```
 
-## API Endpoints
+## API
 
-| Method | Path                       | Description                          |
-|--------|----------------------------|--------------------------------------|
-| GET    | `/api/v1/test-connection`  | Test Gmail + Calendar connectivity   |
-| POST   | `/api/v1/process-emails`   | Process unread emails                |
-| POST   | `/api/v1/approve`          | Resume interrupted workflow (APPROVE/REJECT) |
+| Method | Path | Description                          |
+|--------|------|--------------------------------------|
+| GET | `/api/v1/health` | Health check                         |
+| GET | `/api/v1/test-connection` | Verify Gmail + Calendar connectivity |
+| POST | `/api/v1/process-emails` | Manually trigger inbox processing    |
+| POST | `/api/v1/approve` | Approve / reject workflow via API    |
 
-### How it works
-1. New unread emails are submitted to `WorkflowManager`.
-2. LangGraph executes `ingest -> classify -> action` and interrupts on approval-required paths.
-3. Approval request is sent to `MANAGER_EMAIL`, then graph waits in checkpointed state.
-4. Manager replies `APPROVE`/`REJECT` to the approval email; poller resumes the checkpointed workflow.
-5. Approved path continues from checkpoint to calendar/reply without reclassification.
+Primary flow is fully automated. `/process-emails` and `/approve` are manual fallbacks — approval normally happens via email reply (`APPROVE` / `REJECT`).
 
-API endpoints are also available for manual triggers and debugging.
+## How approval works
 
-## Project Structure
+1. Poll loop fetches unread emails every `POLL_INTERVAL_SECONDS`.
+2. Each email runs `ingest → classify → analyze → tools`.
+3. Sensitive tools (`send_reply`, `create_calendar_event`, `notify_manager`) trigger `ask_approval` — graph interrupts, manager gets an email.
+4. Manager replies `APPROVE` or `REJECT`; next poll detects the reply and resumes the checkpointed workflow.
+5. Approved actions execute from exact checkpoint; rejected emails are archived.
+
+## Project structure
 
 ```
 app/
-├── workflows/
-│   ├── email_graph.py   # LangGraph factory + routing
-│   ├── prompts.py       # LLM prompt templates for workflow nodes
-│   ├── state.py         # Unified EmailAgentState
-│   └── nodes/           # Small single-purpose workflow nodes
-├── api/
-│   └── endpoints.py
+├── api/endpoints.py          # FastAPI router
 ├── schemas/
-│   ├── api.py             # API payload models
-│   └── classification.py  # Enums + EmailClassification schema
+│   ├── api.py                # ApprovalDecision, WorkflowStatus
+│   └── classification.py     # EmailLabel, GmailSystemLabel enums
 ├── services/
-│   ├── workflow_manager.py # WorkflowManager (event delivery only)
-│   ├── ports.py           # Email/Calendar provider protocols
-│   ├── base.py            # Google API base class
-│   ├── gmail_service.py   # Gmail service implementation
-│   └── calendar_service.py # Calendar service implementation
-├── utils/
-│   ├── email_utils.py     # Email parsing helpers
-│   ├── logging_config.py  # Logging setup
-│   └── time_utils.py      # Time helpers
-├── auth.py           # Google OAuth2
-├── dependencies.py   # FastAPI DI factories
-└── settings.py       # Pydantic Settings
+│   ├── ports.py              # EmailProvider / CalendarProvider protocols
+│   ├── gmail_service.py      # Gmail implementation
+│   ├── calendar_service.py   # Calendar implementation
+│   └── workflow_manager.py   # Polling, approval resume, orchestration
+├── workflows/
+│   ├── graph.py              # LangGraph factory + routing_logic
+│   ├── nodes.py              # Workflow nodes
+│   ├── tools.py              # LangChain tools
+│   ├── policies.py           # ApprovalPolicy (pluggable)
+│   ├── prompts.py            # LLM system prompt
+│   ├── state.py              # EmailAgentState TypedDict + reducers
+│   └── utils.py              # Message sanitization, runtime config
+└── utils/                    # Email parsing, logging, time helpers
+scripts/
+└── live_seed_emails.py       # Send test emails to monitored inbox
 ```
 
-## Non-Functional Requirements
-
-- **Audit trail**: Every node appends structured entries in `EmailAgentState.audit_log`.
-- **Error handling**: Node failures stay localized and are surfaced in workflow output.
-- **Idempotency**: Workflow state is checkpointed per thread/workflow id and resumed without re-running prior steps.
-- **Human-in-the-loop**: Approval uses LangGraph `interrupt()` and explicit resume command.
-
-## Smoke Test (local, no Google/OpenAI calls)
+## Seed test emails
 
 ```powershell
-python scripts/smoke_workflow.py
+python scripts/live_seed_emails.py --to your-inbox@gmail.com
+python scripts/live_seed_emails.py --dry-run   # no API calls
 ```
-
-

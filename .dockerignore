@@ -1,0 +1,38 @@
+# ── Secrets — NEVER bake into image ──────────────────────────
+# Mount credentials/ as a read-only volume at runtime:
+#   docker run -v /host/credentials:/app/credentials:ro ...
+credentials/
+.env
+.env.local
+
+# ── Persistent data — use a named volume ─────────────────────
+# docker run -v ai_email_data:/app/data ...
+data/
+
+# ── Python artifacts ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environment (Docker uses its own) ─────────────────
+env/
+venv/
+.venv/
+.conda/
+
+# ── Dev / IDE ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.egg-info/
+
+# ── Tests & scripts (not needed in production image) ──────────
+tests/
+scripts/
+
+# ── Git ────────────────────────────────────────────────────────
+.git/
+.gitignore
+
