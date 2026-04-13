@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  ai-email-assistant:
+    build: .
+    container_name: ai-email-assistant
+    ports:
+      - "9000:9000"
+
+    volumes:
+      - ./data:/app/data
+      # Credentials & .env handed over separately
+      - ./credentials:/app/credentials
+      - ./.env:/app/.env:ro
+
+    environment:
+      LOG_LEVEL: DEBUG
+      APP_PORT: 9000
+
+    tty: true
+    restart: unless-stopped
+
+
