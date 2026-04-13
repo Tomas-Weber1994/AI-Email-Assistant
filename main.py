@@ -45,6 +45,8 @@ async def lifespan(app: FastAPI):
     db_path = settings.CHECKPOINT_DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     serde = JsonPlusSerializer(
         allowed_msgpack_modules=[
             ("app.workflows.state", "EmailClassification"),
