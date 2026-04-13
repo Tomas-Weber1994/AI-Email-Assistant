@@ -26,15 +26,12 @@ async def _poll_loop(manager: WorkflowManager):
     await asyncio.sleep(5)
     while True:
         try:
-            # Spouštíme v try-except bloku uvnitř while, aby loop nikdy nezemřel
             logger.debug("Starting poll interval...")
             await manager.process_pending_approvals()
             await manager.process_unread()
         except asyncio.CancelledError:
-            # Důležité pro korektní vypnutí při yield v lifespanu
             break
         except Exception as e:
-            # Detailní logování chyby, aby bylo jasné, PROČ se to zastavilo
             logger.error(f"CRITICAL POLL ERROR: {str(e)}", exc_info=True)
 
         await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
