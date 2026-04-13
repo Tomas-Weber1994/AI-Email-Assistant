@@ -4,11 +4,13 @@ AI agent monitoring Gmail inbox, classifying emails via GPT, and executing actio
 
 ## Docker Compose quick start
 
+This project is expected to run from the prebuilt Docker Hub image: `tweber94/ai-email-assistant:latest`.
+
 1. Create `.env` from `.env.example` and fill required values (`OPENAI_API_KEY`, `MANAGER_EMAIL`).
 2. Put Google OAuth files into `credentials/`:
    - required: `credentials/credentials.json`
-   - optional on first run: `credentials/token.json` (created after OAuth flow)
-3. Start with Docker Compose.
+   - required for runtime: `credentials/token.json` (generate once via OAuth flow before starting Docker)
+3. Start with Docker Compose (it pulls/runs the Docker Hub image).
 
 ```powershell
 copy .env.example .env
@@ -50,12 +52,14 @@ FastAPI + poll loop → WorkflowManager → LangGraph → Gmail / Calendar APIs
 
 ## Setup
 
-### Prerequisites
-- Python 3.10+, Gmail + Calendar APIs enabled, OpenAI API key
+Use this section only for local source development (not required for Docker Hub run).
+
+### Prerequisites for local run without Docker
+- Python 3.13+, Gmail + Calendar APIs enabled, OpenAI API key
 
 ### Install
 ```powershell
-git clone <repo-url>
+git clone https://github.com/Tomas-Weber1994/AI-Email-Assistant.git
 cd AI-Email-Assistant
 python -m venv env
 env\Scripts\activate
