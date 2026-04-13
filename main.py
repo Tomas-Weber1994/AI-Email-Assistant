@@ -1,4 +1,3 @@
-import os
 import asyncio
 import logging
 import sqlite3
@@ -39,14 +38,11 @@ async def _poll_loop(manager: WorkflowManager):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.proxy_url:
-        os.environ["HTTP_PROXY"] = settings.proxy_url
-        os.environ["HTTPS_PROXY"] = settings.proxy_url
 
-    logger.info("Starting AI Email Agent (Tight-Logic Edition)")
+    logger.info("Starting AI Email Agent")
 
     # Init Checkpointer for workflow state persistence.
-    db_path = settings.DB_PATH.parent / "checkpoints.db"
+    db_path = settings.CHECKPOINT_DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     serde = JsonPlusSerializer(

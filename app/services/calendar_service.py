@@ -24,7 +24,9 @@ class CalendarService(GoogleService):
             "end": {"dateTime": normalized_end, "timeZone": self.LOCAL_TIMEZONE},
         }
         request = self.service.events().insert(calendarId=self.PRIMARY_CALENDAR, body=event_body)
-        return self._call_google_api(request)
+        result = self._call_google_api(request)
+        self.logger.info("Calendar: Event '%s' successfully created at %s", summary, normalized_start)
+        return result
 
     def check_availability(self, start: str, end: str) -> bool:
         normalized_start, normalized_end = normalize_time_range(start, end)
@@ -36,5 +38,5 @@ class CalendarService(GoogleService):
         }
         res = self._call_google_api(self.service.freebusy().query(body=body))
         busy_slots = res.get("calendars", {}).get(self.PRIMARY_CALENDAR, {}).get("busy", [])
+        self.logger.info("CALENDAR: Check %s - %s -> %s", normalized_start, normalized_end, "BUSY" if busy_slots else "FREE")
         return not busy_slots
-

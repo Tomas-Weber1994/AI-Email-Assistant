@@ -74,15 +74,14 @@ cp .env.example .env
 | Variable         | Required | Description                            |
 |------------------|----------|----------------------------------------|
 | `OPENAI_API_KEY` | Yes      | OpenAI API key                         |
-| `GMAIL_USER`     | Yes      | Gmail address being monitored          |
 | `MANAGER_EMAIL`  | Yes      | Email for approval requests            |
 | `MODEL_NAME`     | No       | LLM model (default: `gpt-4o`)         |
 | `APP_HOST`       | No       | Server host (default: `0.0.0.0`)      |
 | `APP_PORT`       | No       | Server port (default: `9000`)          |
-| `POLL_INTERVAL_SECONDS` | No | Inbox poll interval (default: `60`)    |
-| `PROXY_HOST`     | No       | HTTP proxy host                        |
-| `PROXY_PORT`     | No       | HTTP proxy port                        |
-| `DB_PATH`        | No       | SQLite DB path (default: `data/agent.db`) |
+| `POLL_INTERVAL_SECONDS` | No | Inbox poll interval (default: `30`)    |
+| `CREDENTIALS_DIR` | No      | OAuth directory (default: `./credentials`) |
+| `TOKEN_PATH`     | No       | OAuth token file (default: `./credentials/token.json`) |
+| `CHECKPOINT_DB_PATH` | No   | LangGraph checkpoint DB (default: `./data/checkpoints.db`) |
 
 ### 4. Run
 ```powershell

@@ -1,23 +1,21 @@
+import time
 import json
 import logging
 from copy import deepcopy
-
+from app.schemas.classification import GmailSystemLabel, EmailLabel
+from app.schemas.api import WorkflowStatus, ApprovalDecision
 from langchain_core.messages import (
-    AIMessage, HumanMessage, ToolMessage, SystemMessage
+    AIMessage, HumanMessage, SystemMessage
 )
 from langchain_core.runnables import RunnableConfig
 
 from app.workflows.state import EmailAgentState, EmailClassification
-from app.workflows.tools import get_all_tools, ToolName
+from app.workflows.tools import get_all_tools
 from app.workflows.prompts import get_agent_system_prompt
-from app.workflows.policies import apply_sales_outreach_guard
-from app.schemas.classification import GmailSystemLabel, EmailLabel
 from app.workflows.utils import (
-    get_runtime_config, extract_email_parts,
-    sanitize_messages_for_openai
+    extract_email_parts, get_runtime_config, sanitize_messages_for_openai
 )
 from app.settings import settings
-from app.schemas.api import ApprovalDecision, WorkflowStatus
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("audit_trail")
@@ -67,55 +65,40 @@ def classify_node(state: EmailAgentState, config: RunnableConfig):
 
 
 def analyze_node(state: EmailAgentState, config: RunnableConfig):
-    """The brain of the agent. Decides the next action based on message history."""
+    """The brain of the agent. Pure LLM decision-making."""
     passes = int(state.get("analyze_passes", 0)) + 1
-
-    # 1. Safety guard for infinite loops
     if passes > settings.MAX_ANALYZE_PASSES:
         return {"status": WorkflowStatus.ERROR, "audit_log": ["ERROR: Max passes reached."]}
 
-    # 2. DETERMINISTIC BYPASS: If manager approved, replay once and CONSUME state.
-    # We clear both decision and pending calls to prevent any loop or race condition.
+    # If APPROVE then replay the approved tool calls exactly, bypassing LLM
     if state.get("manager_decision") == ApprovalDecision.APPROVE:
-        pending_tools = state.get("pending_approval_tool_calls") or []
-        if pending_tools:
-            logger.info("Manager approved. Replaying tool calls and consuming decision state.")
-            return {
-                "messages": [
-                    AIMessage(content="Executing manager-approved actions.", tool_calls=deepcopy(pending_tools))],
-                "analyze_passes": passes,
-                "manager_decision": None,  # Consume decision
-                "pending_approval_tool_calls": None,  # Clear pending calls
-                "audit_log": [f"ANALYZE: Replayed approved tools: {[t['name'] for t in pending_tools]}"],
-            }
-
-    # 3. Check for terminal state
-    last_msg = state["messages"][-1] if state["messages"] else None
-    if isinstance(last_msg, ToolMessage) and last_msg.name == ToolName.ARCHIVE_AND_LABEL.value:
-        return {"terminal_action_done": True, "audit_log": ["ANALYZE: Terminal tool finished."]}
-
-    # 4. Standard Agent logic
-    history = sanitize_messages_for_openai(state["messages"])
-
-    # If a reply was just sent, force the model to archive in the next step.
-    if isinstance(last_msg, ToolMessage) and last_msg.name == ToolName.SEND_REPLY.value:
-        history.append(SystemMessage(
-            content="Reply sent successfully. Now you MUST call archive_and_label to finalize this email."))
-
-    messages = [SystemMessage(content=get_agent_system_prompt())] + history
+        return {
+            "messages": [AIMessage(content="Executing approved actions.",
+                                   tool_calls=state["pending_approval_tool_calls"])],
+            "manager_decision": None,
+            "pending_approval_tool_calls": None
+        }
 
     runtime = get_runtime_config(config)
+    messages = [SystemMessage(content=get_agent_system_prompt())] + \
+               sanitize_messages_for_openai(state["messages"])
+
     model = runtime["llm"].bind_tools(get_all_tools())
-
-    logger.debug("Invoking LLM for email %s (pass %d)", state["email_id"], passes)
+    logger.debug("Invoking LLM for email %s (Pass %d)", state.get("email_id"), passes)
     response = model.invoke(messages)
-    response = apply_sales_outreach_guard(response, state)
 
-    proposed = [tc["name"] for tc in getattr(response, "tool_calls", [])]
+    tool_calls = getattr(response, "tool_calls", [])
+    if tool_calls:
+        tool_names = [tc["name"] for tc in tool_calls]
+        logger.info("Email %s: LLM proposed tools %s", state.get("email_id"), tool_names)
+    else:
+        logger.info("Email %s: LLM proposed no further tools (moving to cleanup).", state.get("email_id"))
+    # ------------------------------------
+
     return {
         "messages": [response],
         "analyze_passes": passes,
-        "audit_log": [f"ANALYZE: Proposed: {proposed}"],
+        "audit_log": [f"ANALYZE: Proposed: {[tc['name'] for tc in tool_calls]}"],
     }
 
 
@@ -131,23 +114,32 @@ def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
         logger.error("ask_approval_node called without tool_calls.")
         return {"status": WorkflowStatus.ERROR}
 
-    # Don't resend notification if we are already waiting
     if state.get("status") == WorkflowStatus.WAITING_APPROVAL:
         return {}
 
+    tool_names = [tc["name"] for tc in tool_calls]
     action_summary = json.dumps([{"tool": tc["name"], "args": tc["args"]} for tc in tool_calls])
-    email_service.send_approval_request(state["raw_content"], action_summary, runtime.get("thread_id"))
 
-    # Apply PENDING_APPROVAL label to Gmail message
-    email_service.modify_labels(
-        state["email_id"],
-        add=[GmailSystemLabel.PENDING_APPROVAL.value],
-    )
+    try:
+        logger.info("Email %s: Requesting manager approval for tools: %s", state.get("email_id"), tool_names)
+        email_service.send_approval_request(state["raw_content"], action_summary, runtime.get("thread_id"))
+
+        time.sleep(0.8)
+        email_service.modify_labels(
+            state["email_id"],
+            add=[GmailSystemLabel.PENDING_APPROVAL.value],
+        )
+        audit_msg = f"WAIT: Approval requested for: {tool_names}"
+
+    except Exception as e:
+        logger.warning("Email %s: Approval request failed (network error): %s. Forcing wait state.",
+                       state.get("email_id"), e)
+        audit_msg = f"WAIT_ERROR: Network failed during approval request. Manager check needed."
 
     return {
         "status": WorkflowStatus.WAITING_APPROVAL,
         "pending_approval_tool_calls": deepcopy(tool_calls),
-        "audit_log": [f"WAIT: Approval requested for: {[tc['name'] for tc in tool_calls]}"],
+        "audit_log": [audit_msg],
     }
 
 

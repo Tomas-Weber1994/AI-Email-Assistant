@@ -23,4 +23,3 @@ class ApprovalPayload(BaseModel):
     @classmethod
     def normalize_decision(cls, value: str) -> str:
         return str(value).strip().upper()
-

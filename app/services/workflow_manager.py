@@ -56,11 +56,11 @@ class WorkflowManager:
                 continue
 
             logger.info("Starting workflow for email %s", email_id)
-            results.append(await self.process_new_email(email_id, thread_id))
+            results.append(await self._process_new_email(email_id, thread_id))
 
         return results
 
-    async def process_new_email(self, email_id: str, thread_id: str) -> Dict[str, Any]:
+    async def _process_new_email(self, email_id: str, thread_id: str) -> Dict[str, Any]:
         """Starts the workflow graph for a specific email."""
         config = self._get_config(thread_id)
         try:

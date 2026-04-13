@@ -12,8 +12,7 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
     TOKEN_PATH: Path = CREDENTIALS_DIR / "token.json"
-    # Override via DB_PATH env-var — in Docker mount a volume to /data and set DB_PATH=/data/agent.db
-    DB_PATH: Path = BASE_DIR / "data" / "agent.db"
+    CHECKPOINT_DB_PATH: Path = BASE_DIR / "data" / "checkpoints.db"
 
     # Server
     APP_HOST: str = "0.0.0.0"
@@ -21,10 +20,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     POLL_INTERVAL_SECONDS: int = 30
     MAX_ANALYZE_PASSES: int = 6
-
-    # Proxy
-    PROXY_HOST: str | None = None
-    PROXY_PORT: int | None = None
 
     # Google
     MANAGER_EMAIL: str = ""  # email address to send approval requests to
@@ -39,13 +34,6 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
-
-    @field_validator("PROXY_PORT", mode="before")
-    @classmethod
-    def parse_proxy_port(cls, value):
-        if value in (None, ""):
-            return None
-        return int(value)
 
     @field_validator("MAX_ANALYZE_PASSES", mode="before")
     @classmethod
@@ -62,13 +50,6 @@ class Settings(BaseSettings):
         if not manager_email:
             raise ValueError("MANAGER_EMAIL is required for approval workflows.")
         return manager_email
-
-    @property
-    def proxy_url(self) -> str | None:
-        """Return full proxy URL if configured, else None."""
-        if self.PROXY_HOST and self.PROXY_PORT:
-            return f"http://{self.PROXY_HOST}:{self.PROXY_PORT}"
-        return None
 
 
 settings = Settings()

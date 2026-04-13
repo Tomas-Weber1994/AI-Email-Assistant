@@ -7,7 +7,6 @@ httplib2~=0.31.2
 # Network & Env
 requests~=2.33.1
 python-dotenv~=1.2.2
-PySocks~=1.7.1
 
 # AI & Agents
 langgraph~=1.1.6

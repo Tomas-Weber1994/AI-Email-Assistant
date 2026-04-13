@@ -1,4 +1,6 @@
 import base64
+import json
+
 from email.utils import parseaddr
 from email.message import EmailMessage
 from typing import Any
@@ -115,39 +117,43 @@ class GmailService(GoogleService):
         content = str(text or "").strip()
         return content or "Thank you for your message."
 
-    def send_message(self, to: str, subject: str, body: str) -> dict[str, Any]:
-        message = EmailMessage()
-        message.set_content(body)
-        message["To"] = to
-        message["Subject"] = subject
-        return self._send_raw(message)
+    def send_approval_request(self, original_msg: dict[str, Any], action_summary: str, workflow_id: str | None) -> \
+        dict[str, Any]:
+            headers = get_headers(original_msg)
+            source_subject = headers.get("Subject", "No Subject")
+            source_from = headers.get("From", "unknown")
+            workflow_ref = workflow_id or original_msg.get("threadId") or "unknown"
 
-    def send_approval_request(self, original_msg: dict[str, Any], action_summary: str, workflow_id: str | None) -> dict[str, Any]:
+            try:
+                actions = json.loads(action_summary)
+                formatted_actions = ""
+                for i, action in enumerate(actions, 1):
+                    tool = action.get("tool", "unknown").replace("_", " ").upper()
+                    args = action.get("args", {})
+                    detail = args.get("text") or args.get("summary") or args.get("proposed_action") or str(args)
+                    formatted_actions += f"{i}. {tool}\n   Details: {detail}\n\n"
+            except Exception:
+                # If json is not valid
+                formatted_actions = action_summary
 
-        headers = get_headers(original_msg)
-        source_subject = headers.get("Subject", "No Subject")
-        source_from = headers.get("From", "unknown")
-        workflow_ref = workflow_id or original_msg.get("threadId") or "unknown"
+            body = f"""AI AGENT - APPROVAL REQUIRED
+    --------------------------------------------------
+    FROM: {source_from}
+    SUBJECT: {source_subject}
 
-        body = "\n".join([
-            "AI Agent - Approval Required",
-            "",
-            f"From: {source_from}",
-            f"Subject: {source_subject}",
-            "Proposed action:",
-            f"{action_summary}",
-            "",
-            f"Workflow ID: {workflow_ref}",
-            "Reply with APPROVE or REJECT.",
-        ])
+    PROPOSED ACTIONS:
+    {formatted_actions.strip()}
 
-        message = EmailMessage()
-        message.set_content(body)
-        message["To"] = settings.MANAGER_EMAIL
-        message["Subject"] = f"{self.APPROVAL_SUBJECT_TAG} [WF:{workflow_ref}] {source_subject}"
+    --------------------------------------------------
+    Reply: APPROVE or REJECT
+    Workflow ID: [WF:{workflow_ref}]
+    """
 
-        # Keep approval control mail in a separate thread; resume is driven by [WF:...] tag.
-        return self._send_raw(message)
+            message = EmailMessage()
+            message.set_content(body)
+            message["To"] = settings.MANAGER_EMAIL
+            message["Subject"] = f"{self.APPROVAL_SUBJECT_TAG} [WF:{workflow_ref}] {source_subject}"
+            return self._send_raw(message)
 
     def _send_raw(self, message: EmailMessage, thread_id: str | None = None) -> dict[str, Any]:
         body = {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}
