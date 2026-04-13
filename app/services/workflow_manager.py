@@ -45,11 +45,10 @@ class WorkflowManager:
             email_id = msg["id"]
             thread_id = msg.get("threadId") or email_id
 
-            # --- OCHRANA PROTI DUPLICITÁM (Race Condition Prevention) ---
-            # 1. Okamžitě odebereme UNREAD, aby další polling cyklus tento email ignoroval.
+            # Race prevention - immediately removing UNREAD
             await self._run(self.email.modify_labels, email_id, remove=[GmailReservedLabel.UNREAD.value])
 
-            # 2. Skip pokud už na tomto threadu visí schválení (bezpečnostní pojistka).
+            # One of the security blockers
             is_pending = await self._run(self.email.has_label, email_id, GmailSystemLabel.PENDING_APPROVAL.value)
             if is_pending:
                 logger.info("Skipping email %s: already pending manager approval.", email_id)
@@ -93,7 +92,6 @@ class WorkflowManager:
 
             if decision and workflow_id:
                 await self.resume_with_decision(workflow_id, decision)
-                # Označíme odpověď manažera za vyřízenou
                 await self._run(self.email.modify_labels, msg_id, remove=[GmailReservedLabel.UNREAD.value])
 
     async def resume_with_decision(self, thread_id: str, decision: ApprovalDecision) -> Dict[str, Any]:
@@ -103,16 +101,13 @@ class WorkflowManager:
             snapshot = await self._run(self.graph.get_state, config)
             email_id = snapshot.values.get("email_id") if snapshot else None
 
-            # Injekce rozhodnutí do stavu grafu
+            # Injection of manager's decision into the workflow state
             await self._run(self.graph.update_state, config, {
                 "messages": [HumanMessage(content=decision.value)],
                 "manager_decision": decision,
             })
-
-            # Pokračování v exekuci
             result = await self._run(self.graph.invoke, None, config)
 
-            # Pokud vše proběhlo, odstraníme dočasný label PENDING_APPROVAL
             if email_id:
                 await self._run(self.email.modify_labels, email_id, remove=[GmailSystemLabel.PENDING_APPROVAL.value])
 

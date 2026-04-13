@@ -36,7 +36,7 @@ async def test_connection(
 
 @router.post("/process-emails")
 async def process_emails(manager: WorkflowManager = Depends(get_workflow_manager)):
-    """Manual trigger the process of emails."""
+    """Optional way how to trigger processing emails without poll"""
     try:
         results = await manager.process_unread()
         return {"status": "triggered", "count": len(results), "results": results}
@@ -50,7 +50,7 @@ async def approve(
         payload: ApprovalPayload,
         manager: WorkflowManager = Depends(get_workflow_manager),
 ):
-    """Manually trigger approval procedure with manager's decision."""
+    """Optional manual way to approve/reject a workflow from web.based on workflow id"""
     try:
         logger.info("API Approve: workflow=%s decision=%s", payload.workflow_id, payload.decision)
         result = await manager.resume_with_decision(payload.workflow_id, payload.decision)
