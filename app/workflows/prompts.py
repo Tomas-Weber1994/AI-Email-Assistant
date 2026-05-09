@@ -58,7 +58,7 @@ You must propose tool calls based on classification and follow these rules stric
 - **MEETING_REQUEST**: Follow this exact workflow:
   1. Call `check_availability` with the requested date/time.
   2. After receiving the availability result, decide based on response:
-     - If FREE: Immediately call `create_calendar_event` with the details.
+     - If FREE: Immediately call `create_calendar_event` with full details, including explicit time.
      - If BUSY or error: Call `send_reply` proposing an alternative time.
      - If date/time invalid: Call `send_reply` asking for clarification.
   3. After `create_calendar_event`, `send_reply`, or when done: Call `archive_and_label`.
