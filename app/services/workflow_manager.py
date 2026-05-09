@@ -60,11 +60,11 @@ class WorkflowManager:
 
             logger.info("-" * 80)
             logger.info("Starting workflow for email %s", email_id)
+            # Mark as read immediately to prevent reprocessing on next poll (race condition guard)
+            await self._run(self.email.modify_labels, email_id, remove=[GmailReservedLabel.UNREAD.value])
             result = await self._process_new_email(email_id, thread_id)
             results.append(result)
 
-            if result.get("status") != WorkflowStatus.ERROR:
-                await self._run(self.email.modify_labels, email_id, remove=[GmailReservedLabel.UNREAD.value])
 
         return results
 
