@@ -2,10 +2,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 from starlette.concurrency import run_in_threadpool
 
-from app.dependencies import get_gmail, get_calendar, get_workflow_manager
+from app.dependencies import get_email, get_calendar, get_workflow_manager
 from app.schemas.api import ApprovalPayload, WorkflowStatus
-from app.services.calendar_service import CalendarService
-from app.services.gmail_service import GmailService
+from app.services.ports import EmailProvider, CalendarProvider
 from app.services.workflow_manager import WorkflowManager
 
 router = APIRouter()
@@ -20,8 +19,8 @@ async def health():
 
 @router.get("/test-connection")
 async def test_connection(
-        gmail: GmailService = Depends(get_gmail),
-        calendar: CalendarService = Depends(get_calendar),
+        email: EmailProvider = Depends(get_email),
+        calendar: CalendarProvider = Depends(get_calendar),
 ):
     """
     Diagnostic check of services
@@ -31,7 +30,7 @@ async def test_connection(
         return {
             "status": "success",
             "data": {
-                "gmail": await run_in_threadpool(gmail.test_connection),
+                "gmail": await run_in_threadpool(email.test_connection),
                 "calendar": await run_in_threadpool(calendar.test_connection),
             },
         }

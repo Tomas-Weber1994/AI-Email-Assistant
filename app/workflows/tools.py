@@ -6,6 +6,7 @@ from langgraph.prebuilt import InjectedState
 from googleapiclient.errors import HttpError
 from app.schemas.classification import EmailLabel, GmailReservedLabel, GmailSystemLabel
 from app.utils.email_utils import get_headers, get_body
+from app.workflows.utils import get_runtime_config
 
 
 _FINANCE_TOKENS = ("invoice", "receipt", "faktura", "účtenka", "uctenka")
@@ -37,7 +38,7 @@ def _looks_like_finance_email(raw_content: Dict) -> bool:
 @tool
 def check_availability(start_iso: str, end_iso: str, config: RunnableConfig):
     """Checks calendar availability before proposing a meeting time."""
-    calendar = config["configurable"]["calendar"]
+    calendar = get_runtime_config(config)["calendar"]
     try:
         return "FREE" if calendar.check_availability(start_iso, end_iso) else "BUSY"
     except Exception as exc:
@@ -47,7 +48,7 @@ def check_availability(start_iso: str, end_iso: str, config: RunnableConfig):
 @tool
 def create_calendar_event(summary: str, start_iso: str, end_iso: str, config: RunnableConfig):
     """Creates a calendar event. Requires manager approval."""
-    calendar = config["configurable"]["calendar"]
+    calendar = get_runtime_config(config)["calendar"]
 
     try:
         calendar.create_event(summary, start_iso, end_iso)
@@ -59,7 +60,7 @@ def create_calendar_event(summary: str, start_iso: str, end_iso: str, config: Ru
 @tool
 def send_reply(text: str, raw_content: Annotated[Dict, InjectedState("raw_content")], config: RunnableConfig):
     """Sends an email reply. Requires manager approval."""
-    gmail = config["configurable"]["email"]
+    gmail = get_runtime_config(config)["email"]
 
     try:
         gmail.send_reply(raw_content, text)
@@ -79,8 +80,9 @@ def archive_and_label(
     Apply labels and archive the email.
     Always call this as the final step after all other actions.
     """
-    gmail = config["configurable"]["email"]
-    email_id = (raw_content or {}).get("id") or config["configurable"].get("thread_id")
+    runtime = get_runtime_config(config)
+    gmail = runtime["email"]
+    email_id = (raw_content or {}).get("id") or runtime.get("thread_id")
     if not email_id:
         return "GMAIL_ERROR: missing message id"
 

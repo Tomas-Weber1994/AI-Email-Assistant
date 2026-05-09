@@ -44,7 +44,6 @@ class EmailAgentState(TypedDict):
     raw_content: dict
     classification: Optional[EmailClassification]
     analyze_passes: int
-    terminal_action_done: bool
     manager_decision: Optional[ApprovalDecision]
     pending_approval_tool_calls: Optional[List[dict]]
     status: WorkflowStatus

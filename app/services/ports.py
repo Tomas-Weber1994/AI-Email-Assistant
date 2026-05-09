@@ -1,8 +1,12 @@
-from typing import Any, Protocol
+from typing import Any, Protocol, Dict
 
 
 class EmailProvider(Protocol):
     """Port for inbox and outbound email operations."""
+
+    def test_connection(self) -> Dict[str, Any]:
+        """Verify Gmail API connection and return status."""
+        ...
 
     def list_unread(self, max_results: int = 20) -> list[dict[str, Any]]: ...
 
@@ -34,6 +38,10 @@ class EmailProvider(Protocol):
 
 class CalendarProvider(Protocol):
     """Port for calendar availability and event creation."""
+
+    def test_connection(self) -> Dict[str, Any]:
+        """Verify Calendar API connection and return status."""
+        ...
 
     def check_availability(self, start: str, end: str) -> bool: ...
 

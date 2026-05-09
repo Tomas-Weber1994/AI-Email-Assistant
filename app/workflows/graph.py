@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def routing_logic(state: EmailAgentState, policy: ApprovalPolicy) -> Literal["tools", "ask_approval", "cleanup"]:
-    if state.get("terminal_action_done") or state.get("status") == WorkflowStatus.ERROR:
+    if state.get("status") == WorkflowStatus.ERROR:
         return "cleanup"
 
     # Get tools proposed in the last message (if any)

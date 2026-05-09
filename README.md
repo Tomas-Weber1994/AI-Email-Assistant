@@ -12,12 +12,14 @@ This project is expected to run from the prebuilt Docker Hub image: `tweber94/ai
    - required for runtime: `credentials/token.json` (generate once via OAuth flow before starting Docker)
 3. Start with Docker Compose (it pulls/runs the Docker Hub image).
 
-```powershell
-copy .env.example .env
+```bash
+cp .env.example .env
 docker compose pull
 docker compose up -d
 docker compose logs -f ai-email-assistant
 ```
+
+Examples use bash; on Windows, use PowerShell equivalents.
 
 Notes:
 - `data/checkpoints.db` is persisted via `./data:/app/data`.
@@ -30,13 +32,13 @@ Notes:
 FastAPI + poll loop → WorkflowManager → LangGraph → Gmail / Calendar APIs
 ```
 
-**Workflow:** `ingest → classify → analyze → tools → (ask_approval?) → cleanup`
+**Workflow:** `ingest → classify → analyze → (cleanup | ask_approval | tools → analyze)`
 
 | Node | Responsibility |
 |------|---------------|
 | `ingest` | Fetch raw email from Gmail |
 | `classify` | LLM structured output → `EmailLabel` + urgency flag |
-| `analyze` | LLM tool-call planning (MAX_ANALYZE_PASSES guard) |
+| `analyze` | LLM decides whether to finish, request approval, or execute another tool step |
 | `tools` | Execute tool calls |
 | `ask_approval` | Email manager, interrupt & checkpoint workflow |
 | `cleanup` | Write JSON audit record |
@@ -44,7 +46,7 @@ FastAPI + poll loop → WorkflowManager → LangGraph → Gmail / Calendar APIs
 | Label | Auto action | Approval |
 |-------|------------|---------|
 | `MEETING_REQUEST` | Check availability → create event | Yes |
-| `TASK` | Notify manager → archive | Yes (if urgent) |
+| `TASK` | Notify manager → archive | Yes |
 | `INFO_ONLY` | Archive (Finance label for invoices) | No |
 | `SALES_OUTREACH` | Polite decline + archive | Configurable |
 | `MARKETING` | Archive | No |
@@ -58,11 +60,11 @@ Use this section only for local source development (not required for Docker Hub 
 - Python 3.13+, Gmail + Calendar APIs enabled, OpenAI API key
 
 ### Install
-```powershell
+```bash
 git clone https://github.com/Tomas-Weber1994/AI-Email-Assistant.git
 cd AI-Email-Assistant
 python -m venv env
-env\Scripts\activate
+source env/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -73,7 +75,7 @@ pip install -r requirements.txt
 4. Run OAuth flow once → generates `credentials/token.json`.
 
 ### Environment
-```powershell
+```bash
 cp .env.example .env   # fill in values
 ```
 
@@ -89,7 +91,7 @@ cp .env.example .env   # fill in values
 | `CHECKPOINT_DB_PATH` | No | `./data/checkpoints.db` | LangGraph state DB |
 
 ### Run
-```powershell
+```bash
 python main.py
 ```
 
@@ -107,10 +109,10 @@ Primary flow is fully automated. `/process-emails` and `/approve` are manual fal
 ## How approval works
 
 1. Poll loop fetches unread emails every `POLL_INTERVAL_SECONDS`.
-2. Each email runs `ingest → classify → analyze → tools`.
+2. Each email runs `ingest → classify → analyze`; from there it either finishes (`cleanup`), pauses for approval (`ask_approval`), or executes tools and returns to `analyze`.
 3. Sensitive tools (`send_reply`, `create_calendar_event`, `notify_manager`) trigger `ask_approval` — graph interrupts, manager gets an email.
-4. Manager replies `APPROVE` or `REJECT`; next poll detects the reply and resumes the checkpointed workflow.
-5. Approved actions execute from exact checkpoint; rejected emails are archived.
+4. Manager replies `APPROVE` or `REJECT`; next poll detects the reply, sets `manager_decision` in state, and resumes the checkpointed workflow.
+5. Approved actions execute from exact checkpoint; rejected workflows go directly to `cleanup` without executing sensitive actions.
 
 ## Project structure
 
