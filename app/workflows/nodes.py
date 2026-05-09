@@ -19,6 +19,10 @@ from app.settings import settings
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("audit_trail")
 
+# Message content when replaying manager-approved tool calls.
+# Used by policies.py to detect approved replay and bypass re-approval.
+APPROVED_REPLAY_MESSAGE = "Executing approved actions."
+
 
 def ingest_node(state: EmailAgentState, config: RunnableConfig):
     """Initializes the state with email content and metadata."""
@@ -74,7 +78,7 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
         return {
             "messages": [
                 AIMessage(
-                    content="Executing approved actions.",
+                    content=APPROVED_REPLAY_MESSAGE,
                     tool_calls=state["pending_approval_tool_calls"],
                 )
             ],
@@ -83,8 +87,16 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
         }
 
     runtime = get_runtime_config(config)
+    classification = state.get("classification")
+    if not classification:
+        return {"status": WorkflowStatus.ERROR, "audit_log": ["ERROR: Missing classification."]}
+
+    classification_context = (
+        f"Classification: label={classification.label.value}, is_urgent={classification.is_urgent}."
+    )
     messages = (
-        [SystemMessage(content=get_agent_system_prompt())]
+        [SystemMessage(content=get_agent_system_prompt()),
+         SystemMessage(content=classification_context)]
         + sanitize_messages_for_openai(state["messages"])
     )
 

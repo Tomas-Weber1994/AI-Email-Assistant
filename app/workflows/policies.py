@@ -1,10 +1,11 @@
 import logging
 from abc import ABC, abstractmethod
-from app.schemas.api import ApprovalDecision
+from langchain_core.messages import AIMessage
 from app.schemas.classification import EmailLabel
 from app.settings import settings
 from app.workflows.state import EmailAgentState
 from app.workflows.tools import ToolName
+from app.workflows.nodes import APPROVED_REPLAY_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,10 @@ class StandardApprovalPolicy(ApprovalPolicy):
         self._sensitive_tools = frozenset(sensitive_tools)
 
     def requires_approval(self, state: EmailAgentState, tool_calls: list[dict]) -> bool:
-        # Bypass if manager already explicitly approved
-        if state.get("manager_decision") == ApprovalDecision.APPROVE:
+        # Skip re-approval when replaying manager-approved actions.
+        # manager_decision is already None by now, so we check message content.
+        last_msg = state["messages"][-1]
+        if isinstance(last_msg, AIMessage) and APPROVED_REPLAY_MESSAGE in str(last_msg.content):
             return False
 
         sensitive = set(self._sensitive_tools)
