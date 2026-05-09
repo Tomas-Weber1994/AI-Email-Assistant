@@ -111,8 +111,8 @@ Primary flow is fully automated. `/process-emails` and `/approve` are manual fal
 1. Poll loop fetches unread emails every `POLL_INTERVAL_SECONDS`.
 2. Each email runs `ingest → classify → analyze`; from there it either finishes (`cleanup`), pauses for approval (`ask_approval`), or executes tools and returns to `analyze`.
 3. Sensitive tools (`send_reply`, `create_calendar_event`, `notify_manager`) trigger `ask_approval` — graph interrupts, manager gets an email.
-4. Manager replies `APPROVE` or `REJECT`; next poll detects the reply and resumes the checkpointed workflow.
-5. Approved actions execute from exact checkpoint; rejected workflows go directly to `cleanup` without executing sensitive actions.
+4. Manager replies `APPROVE` or `REJECT`; next poll detects the reply, sets `manager_decision` in state, and resumes the checkpointed workflow.
+5. Approved actions execute from exact checkpoint (policy bypasses re-approval check when `manager_decision == APPROVE`); rejected workflows go directly to `cleanup` without executing sensitive actions.
 
 ## Project structure
 

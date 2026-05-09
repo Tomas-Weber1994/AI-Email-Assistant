@@ -72,15 +72,21 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
     if state.get("manager_decision") == ApprovalDecision.APPROVE:
         logger.info("Email %s: Manager approved tool execution.", state.get("email_id"))
         return {
-            "messages": [AIMessage(content="Executing approved actions.",
-                                   tool_calls=state["pending_approval_tool_calls"])],
+            "messages": [
+                AIMessage(
+                    content="Executing approved actions.",
+                    tool_calls=state["pending_approval_tool_calls"],
+                )
+            ],
             "manager_decision": None,
-            "pending_approval_tool_calls": None
+            "pending_approval_tool_calls": None,
         }
 
     runtime = get_runtime_config(config)
-    messages = [SystemMessage(content=get_agent_system_prompt())] + \
-               sanitize_messages_for_openai(state["messages"])
+    messages = (
+        [SystemMessage(content=get_agent_system_prompt())]
+        + sanitize_messages_for_openai(state["messages"])
+    )
 
     model = runtime["llm"].bind_tools(get_all_tools())
     logger.debug("Invoking LLM for email %s (Pass %d)", state.get("email_id"), passes)
@@ -92,7 +98,6 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
         logger.info("Email %s: LLM proposed tools %s", state.get("email_id"), tool_names)
     else:
         logger.info("Email %s: LLM proposed no further tools (moving to cleanup).", state.get("email_id"))
-    # ------------------------------------
 
     return {
         "messages": [response],
@@ -106,7 +111,10 @@ def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
     runtime = get_runtime_config(config)
     email_service = runtime["email"]
 
-    last_ai_msg = next((m for m in reversed(state["messages"]) if hasattr(m, "tool_calls") and m.tool_calls), None)
+    last_ai_msg = next(
+        (m for m in reversed(state["messages"]) if hasattr(m, "tool_calls") and m.tool_calls),
+        None,
+    )
     tool_calls = getattr(last_ai_msg, "tool_calls", []) if last_ai_msg else []
 
     if not tool_calls:
@@ -130,8 +138,11 @@ def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
         audit_msg = f"WAIT: Approval requested for: {tool_names}"
 
     except Exception as e:
-        logger.warning("Email %s: Approval request failed (network error): %s. Forcing wait state.",
-                       state.get("email_id"), e)
+        logger.warning(
+            "Email %s: Approval request failed (network error): %s. Forcing wait state.",
+            state.get("email_id"),
+            e,
+        )
         audit_msg = f"WAIT_ERROR: Network failed during approval request. Manager check needed."
 
     return {
@@ -156,7 +167,7 @@ def cleanup_node(state: EmailAgentState, config: RunnableConfig | None = None):
         "email_id": email_id,
         "outcome": outcome,
         "label": state["classification"].label if state.get("classification") else "N/A",
-        "trace": state.get("audit_log", [])
+        "trace": state.get("audit_log", []),
     }
 
     audit_logger.info("AUDIT_RECORD: %s", json.dumps(audit_record, ensure_ascii=False))
@@ -166,5 +177,5 @@ def cleanup_node(state: EmailAgentState, config: RunnableConfig | None = None):
         "status": WorkflowStatus.COMPLETED if outcome != "ERROR" else WorkflowStatus.ERROR,
         "pending_approval_tool_calls": None,
         "manager_decision": None,
-        "audit_log": [f"FINISH: Outcome {outcome}."]
+        "audit_log": [f"FINISH: Outcome {outcome}."],
     }
