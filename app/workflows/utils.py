@@ -3,13 +3,16 @@ from typing import Any, TypedDict
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from app.utils.email_utils import get_headers, get_body
+from app.services.ports import EmailProvider, CalendarProvider
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeConfig(TypedDict):
-    email: Any
+    """Runtime configuration passed to workflow nodes."""
+    email: EmailProvider
     llm: Any
+    calendar: CalendarProvider
     thread_id: str | None
 
 
@@ -19,6 +22,7 @@ def get_runtime_config(config: RunnableConfig) -> RuntimeConfig:
     return {
         "email": configurable["email"],
         "llm": configurable["llm"],
+        "calendar": configurable["calendar"],
         "thread_id": configurable.get("thread_id"),
     }
 

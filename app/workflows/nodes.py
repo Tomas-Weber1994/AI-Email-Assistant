@@ -1,17 +1,16 @@
-import time
 import json
 import logging
 from copy import deepcopy
 from app.schemas.classification import GmailSystemLabel, EmailLabel
 from app.schemas.api import WorkflowStatus, ApprovalDecision
 from langchain_core.messages import (
-    AIMessage, HumanMessage, SystemMessage
+    AIMessage, HumanMessage, SystemMessage, ToolMessage
 )
 from langchain_core.runnables import RunnableConfig
 
 from app.workflows.state import EmailAgentState, EmailClassification
 from app.workflows.tools import get_all_tools
-from app.workflows.prompts import get_agent_system_prompt
+from app.workflows import prompts
 from app.workflows.utils import (
     extract_email_parts, get_runtime_config, sanitize_messages_for_openai
 )
@@ -35,7 +34,6 @@ def ingest_node(state: EmailAgentState, config: RunnableConfig):
         "messages": [HumanMessage(content=f"From: {sender}\nSubject: {subject}\nBody: {body}")],
         "raw_content": raw_msg,
         "analyze_passes": 0,
-        "terminal_action_done": False,
         "manager_decision": None,
         "status": WorkflowStatus.PROCESSING,
         "audit_log": [f"START: Email {email_id} ingested."],
@@ -50,6 +48,7 @@ def classify_node(state: EmailAgentState, config: RunnableConfig):
 
     logger.debug("Invoking LLM for classification of email %s", state["email_id"])
     classification = llm.invoke([
+        SystemMessage(content=prompts.get_classification_system_prompt()),
         HumanMessage(content=f"From: {sender}\nSubject: {subject}\nBody: {body}")
     ])
     if classification.label == EmailLabel.SPAM:
@@ -81,8 +80,21 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
         }
 
     runtime = get_runtime_config(config)
-    messages = [SystemMessage(content=get_agent_system_prompt())] + \
-               sanitize_messages_for_openai(state["messages"])
+    classification = state.get("classification")
+    if not classification:
+        return {
+            "status": WorkflowStatus.ERROR,
+            "audit_log": ["ERROR: Missing classification."],
+        }
+
+    classification_context = (
+        f"Classification: label={classification.label.value}, "
+        f"is_urgent={classification.is_urgent}."
+    )
+    messages = [
+        SystemMessage(content=prompts.get_agent_system_prompt()),
+        SystemMessage(content=classification_context),
+    ] + sanitize_messages_for_openai(state["messages"])
 
     model = runtime["llm"].bind_tools(get_all_tools())
     logger.debug("Invoking LLM for email %s (Pass %d)", state.get("email_id"), passes)
@@ -94,7 +106,6 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
         logger.info("Email %s: LLM proposed tools %s", state.get("email_id"), tool_names)
     else:
         logger.info("Email %s: LLM proposed no further tools (moving to cleanup).", state.get("email_id"))
-    # ------------------------------------
 
     return {
         "messages": [response],
@@ -105,54 +116,62 @@ def analyze_node(state: EmailAgentState, config: RunnableConfig):
 
 def ask_approval_node(state: EmailAgentState, config: RunnableConfig):
     """Sends a request for manual approval and pauses the workflow."""
+    if state.get("status") == WorkflowStatus.WAITING_APPROVAL:
+        return {}
+
     runtime = get_runtime_config(config)
     email_service = runtime["email"]
-
-    last_ai_msg = next((m for m in reversed(state["messages"]) if hasattr(m, "tool_calls") and m.tool_calls), None)
-    tool_calls = getattr(last_ai_msg, "tool_calls", []) if last_ai_msg else []
+    email_id = state.get("email_id")
+    thread_id = runtime.get("thread_id")
+    tool_calls = _latest_tool_calls(state.get("messages"))
 
     if not tool_calls:
         logger.error("ask_approval_node called without tool_calls.")
         return {"status": WorkflowStatus.ERROR}
 
-    if state.get("status") == WorkflowStatus.WAITING_APPROVAL:
-        return {}
-
     tool_names = [tc["name"] for tc in tool_calls]
     action_summary = json.dumps([{"tool": tc["name"], "args": tc["args"]} for tc in tool_calls])
 
     try:
-        logger.info("Email %s: Requesting manager approval for tools: %s", state.get("email_id"), tool_names)
-        email_service.send_approval_request(state["raw_content"], action_summary, runtime.get("thread_id"))
+        logger.info("Email %s: Requesting manager approval for tools: %s", email_id, tool_names)
+        email_service.send_approval_request(state["raw_content"], action_summary, thread_id)
 
         email_service.modify_labels(
             state["email_id"],
             add=[GmailSystemLabel.PENDING_APPROVAL.value],
         )
-        audit_msg = f"WAIT: Approval requested for: {tool_names}"
-
     except Exception as e:
-        logger.warning("Email %s: Approval request failed (network error): %s. Forcing wait state.",
-                       state.get("email_id"), e)
-        audit_msg = f"WAIT_ERROR: Network failed during approval request. Manager check needed."
+        logger.exception(
+            "Email %s: Approval request failed; moving workflow to error state.",
+            email_id,
+        )
+        return {
+            "status": WorkflowStatus.ERROR,
+            "audit_log": [f"ERROR: Approval request failed: {e}"],
+        }
 
     return {
         "status": WorkflowStatus.WAITING_APPROVAL,
         "pending_approval_tool_calls": deepcopy(tool_calls),
-        "audit_log": [audit_msg],
+        "audit_log": [f"WAIT: Approval requested for: {tool_names}"],
     }
 
 
-def cleanup_node(state: EmailAgentState, config: RunnableConfig | None = None):
+def cleanup_node(state: EmailAgentState, _config: RunnableConfig | None = None):
     """Finalizes the workflow and logs the audit record."""
     email_id = state.get("email_id")
+    status = state.get("status")
+    decision = state.get("manager_decision")
 
-    if state.get("status") == WorkflowStatus.ERROR:
-        outcome = "ERROR"
-    elif state.get("manager_decision") == ApprovalDecision.REJECT:
-        outcome = "REJECTED_BY_MANAGER"
+    if status == WorkflowStatus.ERROR:
+        outcome, finish_entry = "ERROR", "FINISH: Outcome ERROR."
+    elif decision == ApprovalDecision.REJECT:
+        outcome, finish_entry = "REJECTED_BY_MANAGER", "FINISH: Outcome REJECTED_BY_MANAGER."
+    elif _archive_succeeded(state.get("messages")):
+        outcome, finish_entry = "SUCCESS", "FINISH: Outcome SUCCESS."
     else:
-        outcome = "SUCCESS"
+        outcome = "ERROR"
+        finish_entry = "ERROR: Missing successful archive_and_label execution before cleanup."
 
     audit_record = {
         "email_id": email_id,
@@ -168,5 +187,24 @@ def cleanup_node(state: EmailAgentState, config: RunnableConfig | None = None):
         "status": WorkflowStatus.COMPLETED if outcome != "ERROR" else WorkflowStatus.ERROR,
         "pending_approval_tool_calls": None,
         "manager_decision": None,
-        "audit_log": [f"FINISH: Outcome {outcome}."]
+        "audit_log": [finish_entry],
     }
+
+
+def _archive_succeeded(messages) -> bool:
+    return any(
+        isinstance(message, ToolMessage) and message.name == "archive_and_label"
+        and str(message.content).startswith("SUCCESS:")
+        for message in (messages or [])
+    )
+
+
+def _latest_tool_calls(messages) -> list[dict]:
+    """Return the most recent non-empty tool_calls from message history."""
+    for message in reversed(messages or []):
+        calls = getattr(message, "tool_calls", None)
+        if isinstance(calls, list) and calls:
+            return calls
+    return []
+
+

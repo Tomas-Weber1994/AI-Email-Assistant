@@ -1,18 +1,44 @@
 """FastAPI dependency factories — wires together auth + services."""
+from typing import Optional
 from fastapi import Request
 
-from app.auth import get_authorized_http
-from app.services.calendar_service import CalendarService
-from app.services.gmail_service import GmailService
+from app.services.ports import EmailProvider, CalendarProvider
 from app.services.workflow_manager import WorkflowManager
 
 
-def get_gmail() -> GmailService:
-    return GmailService(get_authorized_http())
+class ServiceRegistry:
+    """Simple service registry for singleton caching of services."""
+    _email: Optional[EmailProvider] = None
+    _calendar: Optional[CalendarProvider] = None
+
+    @classmethod
+    def initialize(cls, email: EmailProvider, calendar: CalendarProvider) -> None:
+        """Initialize service instances (called once in lifespan)."""
+        cls._email = email
+        cls._calendar = calendar
+
+    @classmethod
+    def get_email(cls) -> EmailProvider:
+        """Get cached email provider."""
+        if cls._email is None:
+            raise RuntimeError("Services not initialized. Call initialize() in lifespan.")
+        return cls._email
+
+    @classmethod
+    def get_calendar(cls) -> CalendarProvider:
+        """Get cached calendar provider."""
+        if cls._calendar is None:
+            raise RuntimeError("Services not initialized. Call initialize() in lifespan.")
+        return cls._calendar
 
 
-def get_calendar() -> CalendarService:
-    return CalendarService(get_authorized_http())
+# FastAPI Depends callables
+def get_email() -> EmailProvider:
+    return ServiceRegistry.get_email()
+
+
+def get_calendar() -> CalendarProvider:
+    return ServiceRegistry.get_calendar()
 
 
 def get_workflow_manager(request: Request) -> WorkflowManager:
@@ -20,5 +46,3 @@ def get_workflow_manager(request: Request) -> WorkflowManager:
     if manager is None:
         raise RuntimeError("WorkflowManager is not initialized.")
     return manager
-
-

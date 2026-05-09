@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
-from langchain_core.messages import AIMessage
 from app.schemas.classification import EmailLabel
+from app.schemas.api import ApprovalDecision
 from app.settings import settings
 from app.workflows.state import EmailAgentState
 from app.workflows.tools import ToolName
@@ -17,9 +17,9 @@ class StandardApprovalPolicy(ApprovalPolicy):
         self._sensitive_tools = frozenset(sensitive_tools)
 
     def requires_approval(self, state: EmailAgentState, tool_calls: list[dict]) -> bool:
-        # Bypass for allowed tools after manager approval
-        last_msg = state["messages"][-1]
-        if isinstance(last_msg, AIMessage) and "approved actions" in str(last_msg.content):
+        # Bypass if manager already approved
+        decision = state.get("manager_decision")
+        if decision == ApprovalDecision.APPROVE:
             return False
 
         sensitive = set(self._sensitive_tools)

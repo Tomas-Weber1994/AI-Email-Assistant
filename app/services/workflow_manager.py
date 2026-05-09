@@ -1,7 +1,7 @@
 import logging
 import json
 import re
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Callable
 from starlette.concurrency import run_in_threadpool
 from langchain_core.messages import HumanMessage
 
@@ -14,15 +14,22 @@ from app.workflows.graph import create_email_graph
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("audit_trail")
-_WF_TAG_RE = re.compile(r"\[WF:([^]]+)\]")
+_WF_TAG_RE = re.compile(r"\[WF:([^]]+)]")
 
 
 class WorkflowManager:
-    def __init__(self, email: EmailProvider, calendar: CalendarProvider, llm, checkpointer):
+    def __init__(
+        self,
+        email: EmailProvider,
+        calendar: CalendarProvider,
+        llm: Any,
+        checkpointer: Any
+    ) -> None:
+        """Initialize workflow manager with services and graph."""
         self.email: EmailProvider = email
         self.calendar: CalendarProvider = calendar
-        self.llm = llm
-        self.graph = create_email_graph(checkpointer)
+        self.llm: Any = llm
+        self.graph: Any = create_email_graph(checkpointer)
 
     def _get_config(self, thread_id: str) -> Dict[str, Any]:
         """Returns the standard configuration for graph invocation."""
@@ -46,10 +53,6 @@ class WorkflowManager:
             email_id = msg["id"]
             thread_id = msg.get("threadId") or email_id
 
-            # Race prevention - immediately removing UNREAD
-            await self._run(self.email.modify_labels, email_id, remove=[GmailReservedLabel.UNREAD.value])
-
-            # One of the security blockers
             is_pending = await self._run(self.email.has_label, email_id, GmailSystemLabel.PENDING_APPROVAL.value)
             if is_pending:
                 logger.info("Skipping email %s: already pending manager approval.", email_id)
@@ -57,7 +60,11 @@ class WorkflowManager:
 
             logger.info("-" * 80)
             logger.info("Starting workflow for email %s", email_id)
-            results.append(await self._process_new_email(email_id, thread_id))
+            result = await self._process_new_email(email_id, thread_id)
+            results.append(result)
+
+            if result.get("status") != WorkflowStatus.ERROR:
+                await self._run(self.email.modify_labels, email_id, remove=[GmailReservedLabel.UNREAD.value])
 
         return results
 
@@ -133,6 +140,7 @@ class WorkflowManager:
 
     @staticmethod
     def _extract_workflow_id(msg: Dict[str, Any]) -> Optional[str]:
+        """Extracts workflow ID from message headers or body."""
         headers = get_headers(msg)
         subject = headers.get("Subject", "")
         body = f"{msg.get('snippet', '')}\n{get_body(msg)}"
@@ -146,6 +154,7 @@ class WorkflowManager:
 
     @staticmethod
     def _error_response(email_id: Optional[str], thread_id: str, error: Exception) -> Dict[str, Any]:
+        """Creates standardized error response."""
         logger.error(f"Critical error on thread {thread_id}: {error}", exc_info=True)
         return {
             "email_id": email_id,
@@ -156,6 +165,7 @@ class WorkflowManager:
 
     @staticmethod
     def _emit_audit(email_id: str, label: str, error: Exception) -> None:
+        """Emits audit log entry for errors."""
         entry = {
             "email_id": email_id,
             "label": label,
@@ -165,5 +175,6 @@ class WorkflowManager:
         audit_logger.info("AUDIT_RECORD: %s", json.dumps(entry, ensure_ascii=False))
 
     @staticmethod
-    async def _run(func, *args, **kwargs) -> Any:
+    async def _run(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Runs blocking function in thread pool."""
         return await run_in_threadpool(func, *args, **kwargs)

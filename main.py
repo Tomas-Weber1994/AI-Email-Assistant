@@ -14,6 +14,7 @@ from app.auth import get_authorized_http
 from app.schemas.classification import required_gmail_labels
 from app.services.calendar_service import CalendarService
 from app.services.gmail_service import GmailService
+from app.dependencies import ServiceRegistry
 from app.services.workflow_manager import WorkflowManager
 from app.settings import settings
 from app.utils.logging_config import configure_logging
@@ -57,10 +58,11 @@ async def lifespan(app: FastAPI):
     )
     checkpointer = SqliteSaver(conn, serde=serde)
 
-    # Init services
+    # Initialize and cache services
     auth = get_authorized_http()
     gmail = GmailService(auth)
     calendar = CalendarService(auth)
+    ServiceRegistry.initialize(gmail, calendar)
 
     # Init Manager with Checkpointer
     manager = WorkflowManager(

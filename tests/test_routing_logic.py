@@ -26,7 +26,6 @@ def _base_state() -> EmailAgentState:
         "raw_content": {},
         "classification": EmailClassification(label=EmailLabel.TASK, is_urgent=False),
         "analyze_passes": 1,
-        "terminal_action_done": False,
         "manager_decision": None,
         "pending_approval_tool_calls": None,
         "status": WorkflowStatus.PROCESSING,
@@ -38,9 +37,7 @@ def test_routing_goes_cleanup_when_no_tool_calls():
     state = _base_state()
     state["messages"] = [AIMessage(content="done", tool_calls=[])]
     policy = DeterministicApprovalPolicy(value=True)
-
     decision = routing_logic(state, policy)
-
     assert decision == "cleanup"
     assert policy.called is False
 
@@ -57,9 +54,7 @@ def test_routing_routes_to_ask_approval_and_calls_policy_when_manager_approved()
         )
     ]
     policy = DeterministicApprovalPolicy(value=True)
-
     decision = routing_logic(state, policy)
-
     assert decision == "ask_approval"
     assert policy.called is True
 
@@ -77,9 +72,7 @@ def test_routing_rechecks_policy_when_manager_approved_but_calls_changed():
         )
     ]
     policy = DeterministicApprovalPolicy(value=True)
-
     decision = routing_logic(state, policy)
-
     assert decision == "ask_approval"
     assert policy.called is True
 
@@ -93,9 +86,6 @@ def test_routing_sends_to_ask_approval_when_policy_blocks():
         )
     ]
     policy = DeterministicApprovalPolicy(value=True)
-
     decision = routing_logic(state, policy)
-
     assert decision == "ask_approval"
     assert policy.called is True
-
