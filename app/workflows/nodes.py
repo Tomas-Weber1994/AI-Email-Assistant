@@ -10,7 +10,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.workflows.state import EmailAgentState, EmailClassification
 from app.workflows.tools import get_all_tools
-from app.workflows.prompts import get_agent_system_prompt
+from app.workflows.prompts import get_agent_system_prompt, get_classification_system_prompt
 from app.workflows.utils import (
     extract_email_parts, get_runtime_config, sanitize_messages_for_openai
 )
@@ -52,6 +52,7 @@ def classify_node(state: EmailAgentState, config: RunnableConfig):
 
     logger.debug("Invoking LLM for classification of email %s", state["email_id"])
     classification = llm.invoke([
+        SystemMessage(content=get_classification_system_prompt()),
         HumanMessage(content=f"From: {sender}\nSubject: {subject}\nBody: {body}")
     ])
     if classification.label == EmailLabel.SPAM:
